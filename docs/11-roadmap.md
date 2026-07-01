@@ -14,12 +14,23 @@ hooks, spec-driven docs, and the quality-review agent are in place.
 - **Exit criterion met:** given any Envoy request, we build the exact
   `RequestCtx` the standalone proxy builds (proven by `evoxy-adapter` tests).
 
-## M1 — single-doc write path
+## M1 — single-doc write path — *in progress*
 
-Wire `evoxy-adapter` into an actual Envoy filter (dynamic module first, per
-ADR-001) and drive `Pipeline::handle` for single-document ingest against a real
-OpenSearch container. Reuse `osproxy-engine` + a reference tenancy/sink. Map
-`PipelineResponse` → `FilterResponse`/upstream forward.
+Wire `evoxy-adapter` into an actual **Rust dynamic module** (ADR-001) using the
+**transform-then-forward** model (ADR-002): per request, build the `RequestCtx`,
+call the routing SPI for a `RouteDecision`, apply the `BodyTransform` via
+`osproxy-rewrite`, rewrite the `:path` to `target.index` (+ construct `_id`),
+select the Envoy upstream cluster from `target.cluster`, and return `Continue` so
+Envoy forwards. Fail-closed cases (unknown endpoint, isolation reject, stale
+epoch) become immediate filter responses.
+
+Verification: a testcontainer harness stands up **real OpenSearch behind a stock
+Envoy** loading our `.so`, and asserts a single document written through Envoy is
+routed/transformed and round-trips. Reuse a reference tenancy/routing impl.
+
+Sub-steps: (1a) `evoxy-route` — reuse routing SPI + `osproxy-rewrite` to produce
+the mutated request from a `RequestCtx`, with unit tests; (1b) the dynamic-module
+cdylib against the Envoy Rust SDK; (1c) the Envoy+OpenSearch testcontainer test.
 
 ## M2 — read path
 
