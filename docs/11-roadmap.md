@@ -58,10 +58,18 @@ reference tenancy (a generic service can't spawn: `Router::resolve`'s `async fn`
 future isn't provably `Send` generically — a user-tenancy service is the same
 shape monomorphized, deferred).
 
-**(1c) next:** an `#[ignore]` testcontainer integration test — real OpenSearch +
-stock Envoy (ext_proc filter → our service) — asserting a doc written through
-Envoy lands and round-trips. Runnable *here* (Docker is available), unlike the
-dynamic-module path.
+**(1c) done — the thesis proven end-to-end.** `tests/e2e.rs` (`#[ignore]`,
+`--ignored`) stands up **real OpenSearch + stock Envoy** (ext_proc filter → our
+`ExtProcService` served in-process), writes `PUT /orders/_doc/42` *through Envoy*,
+and reads it straight back from OpenSearch — asserting the document (`k`, `who`)
+landed. No Envoy rebuild; stock `envoyproxy/envoy` image + a bootstrap + our Rust.
+Both upstreams reached via the host gateway (`host.docker.internal`, `V4_ONLY`).
+M1 routes statically to the single reference cluster; header-based multi-cluster
+selection needs header-phase re-routing (a body-phase header mutation does not
+reliably re-route) and lands with M2.
+
+**M1 is complete** (write path, both backends: gated ext_proc verified live +
+excluded dynamic-module scaffold).
 
 User-facing SPI model is settled in ADR-003 and shown in
 [06-wiring-example](06-wiring-example.md): the user implements the same

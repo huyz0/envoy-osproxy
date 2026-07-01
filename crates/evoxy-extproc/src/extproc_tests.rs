@@ -107,17 +107,18 @@ async fn body_phase_mutates_route_and_body() {
     let resp = process_message(&filter, &mut state, body_msg(br#"{"k":1}"#)).await;
     let common = body_common(resp);
 
+    // Cluster header selects the upstream; the body is rewritten; route cache is
+    // cleared so the header re-routes.
     assert_eq!(
         set_header(&common, "x-evoxy-cluster").as_deref(),
         Some("opensearch")
     );
-    assert_eq!(set_header(&common, ":method").as_deref(), Some("PUT"));
-    assert_eq!(
-        set_header(&common, ":path").as_deref(),
-        Some("/orders/_doc/42")
-    );
     assert_eq!(mutated_body(&common).as_deref(), Some(&b"{\"k\":1}"[..]));
     assert!(common.clear_route_cache);
+    // The reference tenancy leaves the request line unchanged, so `:method` and
+    // `:path` are NOT re-emitted (re-emitting an unchanged `:path` would empty it).
+    assert_eq!(set_header(&common, ":method"), None);
+    assert_eq!(set_header(&common, ":path"), None);
 }
 
 #[tokio::test]

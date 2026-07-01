@@ -15,11 +15,16 @@ osproxy-tenancy.workspace = true
 envoy-types = "0.7"
 tonic = "0.14"
 prost = "0.14"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-tokio-stream = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 futures-core = "0.3"
 
 [dev-dependencies]
+# The live end-to-end test (tests/e2e.rs, #[ignore]'d): real OpenSearch behind a
+# stock Envoy whose ext_proc filter calls our in-process service. Needs Docker.
+testcontainers = "0.26"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
 
 [lints]
 workspace = true

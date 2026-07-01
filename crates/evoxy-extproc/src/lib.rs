@@ -51,8 +51,11 @@ async fn process_message<R: Router>(
             if headers.end_of_stream {
                 finalize(filter, state.headers.clone(), Vec::new(), Phase::Headers).await
             } else {
-                // Continue; the mutation happens once we have the body.
-                wrap(Resp::RequestHeaders(HeadersResponse::default()))
+                // Continue; the mutation happens once we have the body. Envoy
+                // requires a `CommonResponse` (an empty response is rejected).
+                wrap(Resp::RequestHeaders(HeadersResponse {
+                    response: Some(extproc::CommonResponse::default()),
+                }))
             }
         }
         Some(Req::RequestBody(body)) => {
@@ -60,7 +63,9 @@ async fn process_message<R: Router>(
         }
         // M1 configures ext_proc for the request path only; other phases just
         // continue unmodified.
-        _ => wrap(Resp::RequestBody(BodyResponse::default())),
+        _ => wrap(Resp::RequestBody(BodyResponse {
+            response: Some(extproc::CommonResponse::default()),
+        })),
     }
 }
 
@@ -79,9 +84,11 @@ async fn finalize<R: Router>(
     phase: Phase,
 ) -> ProcessingResponse {
     let req = convert::filter_request(headers, body);
+    let orig_method = req.method.clone();
+    let orig_path = req.path().to_owned();
     let mut actions = ExtProcActions::default();
     let _decision = filter.handle(&req, &mut actions).await;
-    match actions.finish() {
+    match actions.finish(&orig_method, &orig_path) {
         Ok(common) => wrap(match phase {
             Phase::Headers => Resp::RequestHeaders(HeadersResponse {
                 response: Some(common),
