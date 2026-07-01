@@ -91,7 +91,16 @@ Envoy binary `dlopen`s our `libenvoy_osproxy.so`.
   crash — the engine's `#![deny(unwrap_used/expect_used/panic)]` lint posture
   (already enforced in osproxy lib crates) becomes a hard safety requirement, not
   just hygiene. ABI is versioned against the Envoy minor; upgrades must match.
-- **Maturity:** newer than `ext_proc`; ABI still evolving across minors.
+- **Maturity:** newer than `ext_proc`; the C ABI evolves across Envoy minors,
+  so an in-process build pins an Envoy version floor. **Resolved for this project:
+  we track *latest* Envoy, so ABI churn is a non-issue and the dynamic module is a
+  first-class primary from M0.**
+- **Language:** the ABI is a C ABI over a `.so`. The only first-class, maintained
+  SDK is **Rust** (`envoy-proxy-dynamic-modules-rust-sdk`) — which is also exactly
+  what lets us link the osproxy engine crates in with zero language boundary. (C/C++
+  can implement the raw ABI by hand; Go via `-buildmode=c-shared`+cgo is possible
+  but unergonomic. Note the separate `contrib` Go *HTTP filter* is a different
+  mechanism and is **not** stock-binary-loadable.) We write the module in Rust.
 
 ### 3.3 proxy-wasm (in-process WASM sandbox) — **rejected as primary**
 
@@ -112,11 +121,21 @@ demux `_bulk`. Lua is inline but too limited for our engine. Useful as an
 
 ### Recommendation
 
-Start on **`ext_proc`** (§3.1): maximal reuse of the existing engine, full
-process isolation, zero Envoy rebuild, easiest to ship and operate. Keep
-**dynamic modules** (§3.2) as a drop-in low-latency backend behind the *same*
-`RequestCtx` adapter, so the choice becomes a deployment knob, not a rewrite —
-mirroring how osproxy already treats transport as swappable.
+Because we track **latest Envoy**, the dynamic-module ABI-pin caveat is moot, so
+either seam is viable from M0. Both sit behind the **same `RequestCtx` adapter**,
+so the choice is a deployment knob, not a rewrite (as osproxy already treats
+transport as swappable):
+
+- **Rust dynamic module (§3.2) — primary when latency is the priority.** In-process,
+  no gRPC hop, osproxy's own latency profile, mimalloc applies directly, full engine
+  reuse. Cost: a filter panic/UB crashes the Envoy worker → the engine's
+  `deny(unwrap_used/expect_used/panic)` posture is now a hard safety requirement;
+  couples our deploy/scale to Envoy's; harder to debug in isolation.
+- **`ext_proc` (§3.1) — primary when isolation/operability is the priority.** Process
+  isolation (our crash can't take Envoy down), independent scale/deploy, easiest to
+  test — at the cost of one localhost/UDS hop.
+
+Build the `RequestCtx` adapter first; pick the backend per environment.
 
 ## 4. Capability mapping: who owns what after the port
 
