@@ -6,14 +6,13 @@
 
 - [Technical Analysis](00-technical-analysis.md)
 - [Architecture](01-architecture.md)
-- [Wiring Example](06-wiring-example.md)
+- [Using envoy-osproxy](06-wiring-example.md)
 - [Backend Comparison: ext_proc vs. dynamic module](12-backend-comparison.md)
 
 # Engineering
 
 - [Engineering Standards](08-engineering-standards.md)
 - [Testing and Quality](09-testing-and-quality.md)
-- [Roadmap](11-roadmap.md)
 
 # Contracts
 

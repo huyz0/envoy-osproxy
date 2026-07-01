@@ -1,0 +1,16 @@
+[package]
+name = "custom-tenancy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Example: a custom TenancySpi (region-based multi-cluster placement). Shows what a real deployment writes — the thing the built-in reference tenancy does not do."
+
+[dependencies]
+# The SPI is the SAME crates the standalone osproxy uses (from crates.io).
+osproxy-core.workspace = true
+osproxy-spi.workspace = true
+
+[lints]
+workspace = true

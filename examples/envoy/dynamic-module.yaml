@@ -1,0 +1,55 @@
+# Example Envoy bootstrap — DYNAMIC MODULE backend.
+#
+# Runs the evoxy dynamic module IN-PROCESS on a stock envoyproxy/envoy:v1.37.0
+# (no fork, no rebuild). The `.so` is found via ENVOY_DYNAMIC_MODULES_SEARCH_PATH
+# (the image built by `cargo xtask module-image` sets it to /usr/local/lib).
+#
+# This example uses the built-in reference tenancy in shared-index mode (no custom
+# code) — every tenant shares one physical index, isolated by an injected field and
+# a partition-scoped id. To run YOUR own TenancySpi instead, see examples/README.md.
+static_resources:
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: opensearch }
+                http_filters:
+                  # The evoxy dynamic module. `name` selects the loaded .so
+                  # (libevoxy_module.so); `filter_config` is the reference-tenancy blob.
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config: { name: evoxy_module }
+                      filter_name: evoxy
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: |
+                          {
+                            "cluster": "opensearch",
+                            "partition_header": "x-tenant",
+                            "shared_index": "orders_shared",
+                            "inject_field": "_tenant"
+                          }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    # The "cluster" the tenancy names is mapped here to a real OpenSearch upstream.
+    - name: opensearch
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: opensearch
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: opensearch.internal, port_value: 9200 } } }

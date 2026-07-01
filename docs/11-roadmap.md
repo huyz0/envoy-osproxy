@@ -14,7 +14,7 @@ hooks, spec-driven docs, and the quality-review agent are in place.
 - **Exit criterion met:** given any Envoy request, we build the exact
   `RequestCtx` the standalone proxy builds (proven by `evoxy-adapter` tests).
 
-## M1 — single-doc write path — *in progress*
+## M1 — single-doc write path — **done**
 
 Wire `evoxy-adapter` into an actual **Rust dynamic module** (ADR-001) using the
 **transform-then-forward** model (ADR-002): per request, build the `RequestCtx`,
@@ -79,7 +79,7 @@ User-facing SPI model is settled in ADR-003 and shown in
 `osproxy-spi` traits, statically compiled into a `cdylib` via `register!`, and
 drops the `Sink` seam (Envoy forwards).
 
-## M2 — read path — *in progress*
+## M2 — read path — **done**
 
 **(M2a) request-side read routing — done.** `evoxy-route` now handles `GetById`,
 `DeleteById`, `Search`, and `Count`: it maps the client's logical id to the
@@ -124,7 +124,7 @@ partition-scoped id, query partition-filter, and strip/unmap-on-read, all live.
 header-phase routing (uses the `resolve_cluster`/`route_headers` primitives), or a
 resolved ext_proc routing mode.
 
-## M3 — `_bulk` / `_mget` / `_msearch`
+## M3 — `_bulk` / `_mget` / `_msearch` — **done**
 
 **(M3a) `_bulk` request rewrite — done and proven live.** `evoxy-route::bulk`
 parses the NDJSON (`parse_bulk`) and rewrites each item in place: the action
@@ -185,7 +185,7 @@ body must still be an `ImmediateResponse`, not a request already committed
 upstream). This is the next increment; the cap already bounds memory today. It is
 also where the ext_proc-vs-module cost of body handling is measured (docs/00 §6).
 
-## M4 — Envoy-owned TLS/mTLS
+## M4 — Envoy-owned TLS/mTLS — **done**
 
 Principal from Envoy-validated identity (XFCC/SAN) rather than self-parsed certs;
 delete any residual transport concerns. mTLS-for-mutation policy expressed in
@@ -231,7 +231,7 @@ response are unchanged (`_bulk`/`_mget`/`_msearch` carry the id in JSON, not the
 path, and are untouched). The mTLS e2e now uses a real SPIFFE **URI SAN** and
 asserts the stored `_tenant`/id are `spiffe://td/acme` end to end.
 
-## M5 — migration + async fan-out
+## M5 — migration + async fan-out — **done**
 
 **(M5a) migration write gate — done and proven live.** `prepare` now runs the
 write gate on **every** write path (`EndpointKind::is_write` — ingest, `_bulk`,
@@ -282,7 +282,7 @@ adding wire TLS to the extension becomes a deliberate, reviewed act. The heavy
 part of osproxy's M6 (suite pinning, a runtime FIPS-engaged check, a validated
 module in-binary) does not port — Envoy carries it.
 
-## M7 — observability + NFR-P
+## M7 — observability + NFR-P — **done**
 
 **(M7a) NFR-P A/B latency — done and measured live.** `tests/perf.rs`
 (`#[ignore]`'d) times the *same* GET-by-id directly against OpenSearch (baseline)

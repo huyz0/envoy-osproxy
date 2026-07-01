@@ -29,14 +29,31 @@ deployment knob, not a rewrite (see [docs/12](docs/12-backend-comparison.md)):
 Both are verified live end-to-end through a **stock, unmodified** Envoy — the
 module is loaded via the upstream `DynamicModuleFilter` (no fork, no rebuild).
 
-## The engine
+## Built on osproxy
 
-The request brain reuses the transport-agnostic **osproxy engine crates**
-(`osproxy-core`/`-spi`/`-tenancy`/`-rewrite`), pulled from **crates.io** — so a
-`cargo build` resolves everything; there is no other repository to check out or be
-aware of. The `evoxy-*` crates here are the Envoy-facing layer: they build the
-same `RequestCtx` the standalone proxy builds and drive the same engine behind
-Envoy's seams instead of a bespoke HTTP server.
+This project **builds on top of [osproxy](https://github.com/huyz0/opensearch-proxy)**,
+the standalone OpenSearch proxy. It reuses osproxy's transport-agnostic engine
+crates (`osproxy-core`/`-spi`/`-tenancy`/`-rewrite`) from **crates.io** (pinned
+`=1.0.1`) — so a `cargo build` resolves everything and there is no other repository
+to check out. **osproxy owns the multi-tenant OpenSearch logic; this project hosts
+that logic inside a stock Envoy** instead of osproxy's own HTTP server:
+
+| | osproxy (reused engine) | envoy-osproxy (this repo) |
+|---|---|---|
+| tenancy, placement, reshaping, `_bulk`/`_mget`/`_msearch`, migration | ✅ owns it | reuses as-is |
+| the wire: HTTP, TLS/mTLS, pooling, LB, retries | osproxy's own server | **Envoy** (we ship none) |
+| how the brain is invoked | osproxy's pipeline | Envoy **ext_proc** or **dynamic module** |
+
+The `evoxy-*` crates are the thin Envoy-facing layer that builds the same
+`RequestCtx` and drives the same engine behind Envoy's seams.
+
+## Not turnkey — how to run it
+
+This is a **toolkit, not a ready-to-run proxy.** To put it in front of OpenSearch
+you (1) implement the tenancy SPI *or* use the built-in reference tenancy, (2) build
+an artifact — an ext_proc server or a dynamic-module `.so`, and (3) write the Envoy
+bootstrap. See **[examples/](examples)** for compiling SPI code and Envoy configs
+for both backends.
 
 ### Layout
 
@@ -50,8 +67,9 @@ Envoy's seams instead of a bespoke HTTP server.
 | [crates/evoxy-module](crates/evoxy-module) | The dynamic-module cdylib (workspace-excluded) |
 | [crates/evoxy-bridge](crates/evoxy-bridge) | The async fan-out HTTP→Kafka bridge |
 | [crates/evoxy-bench](crates/evoxy-bench) | Pure NFR-P bench substrate (dev-only) |
+| [examples/](examples) | A compiling custom `TenancySpi` + Envoy configs for both backends |
 | [xtask](xtask) | The gate (`cargo xtask ci`) and image builder |
-| [docs/](docs) | Spec-driven docs, ADRs, roadmap |
+| [docs/](docs) | Spec-driven docs and ADRs |
 
 ## Develop
 
