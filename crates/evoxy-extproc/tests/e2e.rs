@@ -288,15 +288,26 @@ async fn shared_index_isolates_tenants() {
 
     // acme reads id `1` back: its own document, in its logical view (logical
     // index + id, no injected `_tenant`).
-    let got: Value = http
+    let got_resp = http
         .get(format!("{base}/orders/_doc/1"))
         .header("x-tenant", "acme")
         .send()
         .await
-        .expect("GET through Envoy")
-        .json()
-        .await
-        .expect("json");
+        .expect("GET through Envoy");
+    // M7: the shape-only routing-decision header rides the response — kinds and
+    // flags only (shared-index write path is transform=both, isolation on), no
+    // tenant values.
+    let decision = got_resp
+        .headers()
+        .get("x-evoxy-decision")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(
+        decision, "transform=both;migration=settled;isolation=on",
+        "decision header: {decision:?}"
+    );
+    let got: Value = got_resp.json().await.expect("json");
     assert_eq!(got["_index"], json!("orders"), "logical index: {got}");
     assert_eq!(got["_id"], json!("1"), "logical id: {got}");
     assert!(

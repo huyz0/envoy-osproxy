@@ -24,6 +24,7 @@ pub use actions::CLUSTER_HEADER;
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
+use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
 use envoy_types::pb::envoy::r#type::v3::HttpStatus;
 use evoxy_filter::Filter;
 use extproc::processing_request::Request as Req;
@@ -95,9 +96,12 @@ async fn process_message<R: Router>(
         // Response path (M2b): reshape a read's response into the client's logical
         // view. Headers just continue; the body is shaped (strip injected fields,
         // map physical ids back to logical) using the buffered request headers.
-        Some(Req::ResponseHeaders(_)) => wrap(Resp::ResponseHeaders(HeadersResponse {
-            response: Some(extproc::CommonResponse::default()),
-        })),
+        Some(Req::ResponseHeaders(_)) => {
+            // Surface the shape-only routing decision (M7) as a response header,
+            // the "why did this route here" the extension knows and Envoy cannot.
+            let req = convert::filter_request(state.headers.clone(), Vec::new());
+            response_headers(filter.decision_shape(&req).await)
+        }
         Some(Req::ResponseBody(body)) => {
             let req = convert::filter_request(state.headers.clone(), Vec::new());
             let shaped = filter.shape_response(&req, &body.body).await;
@@ -108,6 +112,37 @@ async fn process_message<R: Router>(
             response: Some(extproc::CommonResponse::default()),
         })),
     }
+}
+
+/// The shape-only routing-decision observability header (M7).
+const DECISION_HEADER: &str = "x-evoxy-decision";
+
+/// Build the response-headers-phase reply: add the shape-only decision header when
+/// the request resolved, else continue unchanged.
+fn response_headers(decision: Option<String>) -> ProcessingResponse {
+    let common = match decision {
+        Some(shape) => extproc::CommonResponse {
+            header_mutation: Some(extproc::HeaderMutation {
+                set_headers: vec![HeaderValueOption {
+                    header: Some(HeaderValue {
+                        key: DECISION_HEADER.to_owned(),
+                        // Envoy applies the byte `raw_value`, not the string `value`.
+                        value: String::new(),
+                        raw_value: shape.into_bytes(),
+                    }),
+                    // OVERWRITE_IF_EXISTS_OR_ADD.
+                    append_action: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        None => extproc::CommonResponse::default(),
+    };
+    wrap(Resp::ResponseHeaders(HeadersResponse {
+        response: Some(common),
+    }))
 }
 
 /// Build the response-body-phase reply: replace the body when it was reshaped,

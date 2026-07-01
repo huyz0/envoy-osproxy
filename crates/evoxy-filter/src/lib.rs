@@ -177,6 +177,16 @@ impl<R: Router> Filter<R> {
         let parts = evoxy_adapter::RequestParts::from_filter(req, "").ok()?;
         evoxy_route::shape_read_response(&self.router, &parts.ctx(), upstream_body).await
     }
+
+    /// A **shape-only** summary of the routing decision for `req` — the transform
+    /// kind, migration phase, and isolation flag (no tenant values), for the
+    /// backend to surface as an observability signal (M7). `None` if the request
+    /// does not resolve (it then carries no decision to report).
+    pub async fn decision_shape(&self, req: &FilterRequest) -> Option<String> {
+        let parts = evoxy_adapter::RequestParts::from_filter(req, "").ok()?;
+        let resolved = self.router.resolve(&parts.ctx()).await.ok()?;
+        Some(evoxy_route::decision_shape(&resolved))
+    }
 }
 
 /// Apply the decision's header mutations to the forwarded request.

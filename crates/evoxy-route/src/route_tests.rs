@@ -504,6 +504,36 @@ async fn shape_bulk_response_unmaps_ids_and_index() {
 }
 
 #[tokio::test]
+async fn decision_shape_is_shape_only() {
+    // Shared-index write: transform=both, isolation on. The shape carries kinds
+    // and flags only — no partition, index, or id value.
+    let req = request("POST", "/shared/_doc", Some("acme"), br#"{"id":1}"#);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    let shape = crate::decision_shape(&resolved);
+    assert_eq!(shape, "transform=both;migration=settled;isolation=on");
+    // No tenant values leak.
+    assert!(!shape.contains("acme"));
+    assert!(!shape.contains("shared"));
+}
+
+#[tokio::test]
+async fn decision_shape_dedicated_has_isolation_off() {
+    let req = request("GET", "/orders/_doc/1", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = router(dedicated_index(), None)
+        .resolve(&parts.ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        crate::decision_shape(&resolved),
+        "transform=none;migration=settled;isolation=off"
+    );
+}
+
+#[tokio::test]
 async fn write_during_cutover_is_rejected_409() {
     // The write gate is closed (cutover): a write fails closed with a retryable 409.
     let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);

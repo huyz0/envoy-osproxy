@@ -292,11 +292,20 @@ phases, both buffered) — and it quantifies the ext_proc-vs-module tradeoff
 *provisional in-process* NFR-P1 bound (2 ms), honestly — the ext_proc hop is not
 an in-proc path; the JSON records the real numbers rather than pretending.
 
-Remaining M7 (deferred): the shape-only routing-decision observability the
-extension uniquely knows (partition/placement/transform/migration as a shape-only
-signal), and reconciling our trace context with Envoy's span. The admin plane
-(`/debug/explain`, `/metrics`, `/admin/directives`) is Envoy-adjacent — Envoy has
-no notion of it — and would live on our own port, a later increment.
+**(M7b) shape-only decision observability — done and proven live.** The extension
+knows *why* a request routed where it did — the transform kind, migration phase,
+and whether isolation applied — which Envoy cannot see. `evoxy-route::decision_shape`
+renders it as a **shape-only** string (kinds and flags only: `transform=both;
+migration=settled;isolation=on` — no partition, index, or id value, honoring the
+no-value-leak rule), and the ext_proc response-headers phase surfaces it as an
+`x-evoxy-decision` response header (`Filter::decision_shape`). Two route unit tests
+(shared→`both`/isolation on with no value leak, dedicated→`none`/off); the
+shared-index e2e asserts the header rides a real response through stock Envoy.
+
+Remaining M7 (deferred): reconciling our trace context with Envoy's span
+(traceparent propagation), and the richer admin plane (`/debug/explain`,
+`/metrics`, `/admin/directives`) — Envoy-adjacent, on our own port, a later
+increment now that the decision signal and the NFR-P substrate exist.
 
 ## v2 — the other backend
 

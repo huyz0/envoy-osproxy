@@ -18,6 +18,11 @@
 //! endpoint not yet supported. Bodies are shape-only (an error code, never a
 //! tenant value).
 #![deny(missing_docs)]
+// JUSTIFY: the transform-then-forward dispatch hub — `prepare` plus the per-
+// endpoint forward builders, the read/response seams, and the fail-closed status
+// mapping. Each family already lives in its own module (bulk/demux/read/response/
+// transform); what remains here is the single dispatch narrative, which reads
+// worse split across files than kept together.
 
 mod bulk;
 mod demux;
@@ -33,8 +38,34 @@ pub use response::{
 use evoxy_abi::FilterResponse;
 use osproxy_core::EndpointKind;
 use osproxy_rewrite::RewriteError;
-use osproxy_spi::{RequestCtx, SpiError};
+use osproxy_spi::{BodyTransform, RequestCtx, SpiError};
 use osproxy_tenancy::{Resolved, Router};
+
+/// A **shape-only** summary of a routing decision — the "why did this route here"
+/// the extension knows but Envoy cannot (docs/00 §5): the transform kind, the
+/// migration phase, and whether read/write isolation was applied. Deliberately
+/// carries no tenant *values* (no partition, index, or id), only kinds and flags,
+/// so it is safe to surface on every response (the no-value-leak rule).
+#[must_use]
+pub fn decision_shape(resolved: &Resolved) -> String {
+    let transform = match &resolved.decision.body_transform {
+        BodyTransform::None => "none",
+        BodyTransform::Inject(_) => "inject",
+        BodyTransform::ConstructId(_) => "construct_id",
+        BodyTransform::Both { .. } => "both",
+    };
+    // Isolation is "on" when the placement injects a partition-scoping field
+    // (shared-index); a dedicated placement isolates by cluster/index instead.
+    let isolation = matches!(
+        resolved.decision.body_transform,
+        BodyTransform::Inject(_) | BodyTransform::Both { .. }
+    );
+    format!(
+        "transform={transform};migration={};isolation={}",
+        resolved.migration.as_str(),
+        if isolation { "on" } else { "off" }
+    )
+}
 
 /// What to do with a request after routing: forward it upstream (mutated) or
 /// reply immediately (fail-closed).
