@@ -13,14 +13,14 @@ use std::task::{Context, Poll, Waker};
 
 use evoxy_abi::{FilterRequest, HttpVersion, MtlsIdentity};
 use evoxy_adapter::RequestParts;
-use evoxy_route::{prepare, Forward};
+use evoxy_route::{decision_shape, prepare, shape_get_response, shape_search_response, Forward};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use osproxy_core::{ClusterId, Epoch, FieldName, IndexName, PartitionId};
 use osproxy_spi::{
     BodyDoc, DocIdRule, IdTemplate, InjectedField, InjectedValue, Placement, PlacementAt,
     RequestCtx, SpiError, TenancySpi,
 };
-use osproxy_tenancy::TenancyRouter;
+use osproxy_tenancy::{Resolved, TenancyRouter};
 
 /// A shared-index tenancy (inject `_tenant` + partition-scoped id) — the heavier,
 /// more representative transform path.
@@ -137,8 +137,59 @@ fn bench_prepare_bulk() -> bool {
     black_box(drive(&req))
 }
 
+// ---- response-side reshaping (setup builds the Resolved outside the measured
+// region, so each bench measures only the reshape work) ----
+
+/// Resolve a shared-index request once, for the response-shape benches. `None`
+/// only if resolution fails (it does not for this stub), which each bench handles.
+fn make_resolved() -> Option<Resolved> {
+    let req = request("POST", "/shared/_search", b"{}");
+    let parts = RequestParts::from_filter(&req, "r").ok()?;
+    block_on(router().resolve(&parts.ctx())).ok()
+}
+
+const GET_BODY: &[u8] =
+    br#"{"_index":"shared","_id":"acme:1","found":true,"_source":{"_tenant":"acme","k":1,"who":"a"}}"#;
+const SEARCH_BODY: &[u8] = br#"{"took":1,"hits":{"total":{"value":1},"hits":[
+    {"_index":"shared","_id":"acme:1","_source":{"_tenant":"acme","k":1}}]}}"#;
+
+// The shape-only decision string (per response, for the `x-evoxy-decision` header).
+#[library_benchmark(setup = make_resolved)]
+fn bench_decision_shape(resolved: Option<Resolved>) -> usize {
+    match resolved {
+        Some(r) => black_box(decision_shape(&r)).len(),
+        None => 0,
+    }
+}
+
+// Get-by-id reshape: strip injected fields, present the logical `_index`/`_id`.
+#[library_benchmark(setup = make_resolved)]
+fn bench_shape_get(resolved: Option<Resolved>) -> usize {
+    match resolved {
+        Some(r) => shape_get_response(&r, black_box("shared"), black_box("1"), black_box(GET_BODY))
+            .map_or(0, |v| v.len()),
+        None => 0,
+    }
+}
+
+// Search reshape: per-hit logical index, physical→logical id, strip injected fields.
+#[library_benchmark(setup = make_resolved)]
+fn bench_shape_search(resolved: Option<Resolved>) -> usize {
+    match resolved {
+        Some(r) => shape_search_response(&r, black_box("shared"), black_box(SEARCH_BODY))
+            .map_or(0, |v| v.len()),
+        None => 0,
+    }
+}
+
 library_benchmark_group!(
     name = route;
-    benchmarks = bench_prepare_write, bench_prepare_search, bench_prepare_bulk
+    benchmarks =
+        bench_prepare_write,
+        bench_prepare_search,
+        bench_prepare_bulk,
+        bench_decision_shape,
+        bench_shape_get,
+        bench_shape_search
 );
 main!(library_benchmark_groups = route);

@@ -488,6 +488,7 @@ dependencies = [
  "evoxy-abi",
  "evoxy-adapter",
  "evoxy-route",
+ "iai-callgrind",
  "osproxy-core",
  "osproxy-spi",
  "osproxy-tenancy",

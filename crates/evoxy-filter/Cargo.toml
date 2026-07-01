@@ -19,6 +19,11 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "brain"
+harness = false
 
 [lints]
 workspace = true
