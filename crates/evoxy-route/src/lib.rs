@@ -137,6 +137,28 @@ pub async fn resolve_cluster<R: Router + ?Sized>(
     }
 }
 
+/// Reshape a read's upstream response into the client's logical view (M2b),
+/// resolving the routing decision from the request context. Returns the shaped
+/// body, or `None` when there is nothing to do (not a shapeable read, resolution
+/// failed, or the body could not be parsed) — the filter then forwards the
+/// upstream body unchanged.
+pub async fn shape_read_response<R: Router + ?Sized>(
+    router: &R,
+    ctx: &RequestCtx<'_>,
+    upstream_body: &[u8],
+) -> Option<Vec<u8>> {
+    let resolved = router.resolve(ctx).await.ok()?;
+    match ctx.endpoint() {
+        EndpointKind::GetById => {
+            shape_get_response(&resolved, ctx.logical_index(), ctx.doc_id()?, upstream_body).ok()
+        }
+        EndpointKind::Search => {
+            shape_search_response(&resolved, ctx.logical_index(), upstream_body).ok()
+        }
+        _ => None,
+    }
+}
+
 /// The single-document write path: apply the body transform and build the forward.
 fn write_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
     let transformed = match transform::apply(

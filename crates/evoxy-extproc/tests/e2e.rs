@@ -1,34 +1,34 @@
-//! Live end-to-end proof of the whole thesis: a stock Envoy + our ext_proc
-//! service (no Envoy rebuild) routes and transforms a real write into a real
-//! OpenSearch.
+//! Live end-to-end proof: a stock Envoy + our ext_proc service (no Envoy rebuild)
+//! routes and transforms real requests against a real OpenSearch.
 //!
-//! Topology (all reachable via the host gateway, so no shared docker network):
-//! ```text
-//!   reqwest ─PUT /orders/_doc/42─► Envoy(container) ─ext_proc gRPC─► our service(host)
-//!                                        │  runs the reused brain, mutates the body
-//!                                        └─forwards───────────────► OpenSearch(container)
-//! ```
-//! The service runs the reference tenancy (every partition on the `opensearch`
-//! cluster). M1 routes statically to that one cluster; the filter still sets
-//! `x-evoxy-cluster` for the M2 multi-cluster path. We then read the doc straight
-//! from OpenSearch (realtime GET) and assert it landed.
+//! Two tests, both `#[ignore]`'d (need a Docker daemon; run with `--ignored`):
+//! - `write_then_read_through_envoy` — dedicated mode; a write and a read flow
+//!   through stock Envoy into OpenSearch and round-trip.
+//! - `shared_index_isolates_tenants` — shared-index mode; two tenants share one
+//!   physical index, and each sees only its own documents, in its logical view
+//!   (partition-scoped ids constructed on write and mapped back on read, the
+//!   isolation field injected then stripped, the query partition-filtered).
 //!
-//! `#[ignore]`'d — needs a Docker daemon; run with `--ignored`.
-#![allow(clippy::pedantic)]
+//! Both upstreams (OpenSearch, our service) are reached from the Envoy container
+//! via the host gateway, so no shared docker network is needed.
+// unwrap/expect are fine in this e2e harness; the helpers below are not `#[test]`
+// fns, so `allow-unwrap-in-tests` does not cover them.
+#![allow(clippy::pedantic, clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;
 
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
-use evoxy_filter::{Filter, ReferenceTenancy};
+use evoxy_filter::{Filter, FilterConfig, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
+use serde_json::{json, Value};
 use testcontainers::core::{ContainerPort, Host, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio_stream::wrappers::TcpListenerStream;
 
-/// The Envoy bootstrap: an ext_proc HTTP filter (buffered request body) calling
-/// our service, and a header-matched route to the OpenSearch cluster. Both
-/// upstreams are reached over the host gateway.
+/// The Envoy bootstrap: an ext_proc HTTP filter (buffered request + response
+/// body) calling our service, and a static route to the OpenSearch cluster. Both
+/// upstreams are reached over the host gateway (IPv4).
 fn envoy_bootstrap(extproc_port: u16, opensearch_port: u16) -> Vec<u8> {
     const TEMPLATE: &str = r#"
 admin:
@@ -49,12 +49,6 @@ static_resources:
             - name: all
               domains: ["*"]
               routes:
-              # M1 is single-cluster (the reference tenancy resolves one cluster),
-              # so route statically to it. Our filter still sets `x-evoxy-cluster`;
-              # header-based multi-cluster selection needs header-phase re-routing
-              # (a body-phase header mutation does not reliably re-route) and lands
-              # with M2. This test proves the data-plane thesis: a write flows
-              # through stock Envoy + our ext_proc service into real OpenSearch.
               - match: { prefix: "/" }
                 route: { cluster: opensearch }
           http_filters:
@@ -62,14 +56,12 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
               grpc_service: { envoy_grpc: { cluster_name: extproc } }
-              # Permit the filter to rewrite routing pseudo-headers (:path,
-              # :method, :authority) — our transform rewrites the path/index.
               mutation_rules: { allow_all_routing: true, allow_envoy: true }
               processing_mode:
                 request_header_mode: SEND
                 request_body_mode: BUFFERED
-                response_header_mode: SKIP
-                response_body_mode: NONE
+                response_header_mode: SEND
+                response_body_mode: BUFFERED
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -101,11 +93,9 @@ static_resources:
         .into_bytes()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Docker; run with --ignored"]
-async fn write_through_envoy_lands_in_opensearch() {
-    // 1. Real OpenSearch (security disabled), reachable on a host port.
-    let opensearch = GenericImage::new("opensearchproject/opensearch", "2.11.1")
+/// Start a single-node OpenSearch (security disabled).
+async fn start_opensearch() -> ContainerAsync<GenericImage> {
+    GenericImage::new("opensearchproject/opensearch", "2.11.1")
         .with_exposed_port(ContainerPort::Tcp(9200))
         .with_wait_for(WaitFor::message_on_stdout("] started"))
         .with_env_var("discovery.type", "single-node")
@@ -115,27 +105,27 @@ async fn write_through_envoy_lands_in_opensearch() {
         .with_env_var("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")
         .start()
         .await
-        .expect("opensearch starts");
-    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+        .expect("opensearch starts")
+}
 
-    // 2. Our ext_proc service on an ephemeral host port (reference tenancy).
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", 0)).await.unwrap();
-    let svc_port = listener.local_addr().unwrap().port();
-    let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::new(
-        "opensearch",
-        "http://unused", // Envoy forwards; the endpoint on the placement is unused here.
-        "x-tenant",
-    )));
+/// Serve our ext_proc service on an ephemeral host port; returns the port.
+fn spawn_service(filter: Filter<TenancyRouter<ReferenceTenancy>>) -> u16 {
+    let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
         tonic::transport::Server::builder()
             .add_service(ExternalProcessorServer::new(ExtProcService::new(filter)))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await
             .ok();
     });
+    port
+}
 
-    // 3. Stock Envoy loading a bootstrap that ext_proc's to us and routes on the
-    //    cluster header. Both upstreams via the host gateway.
+/// Start a stock Envoy over the generated bootstrap; returns (container, base URL).
+async fn start_envoy(svc_port: u16, os_port: u16) -> (ContainerAsync<GenericImage>, String) {
     let envoy = GenericImage::new("envoyproxy/envoy", "v1.31-latest")
         .with_exposed_port(ContainerPort::Tcp(10000))
         .with_wait_for(WaitFor::message_on_stderr("starting main dispatch loop"))
@@ -145,54 +135,44 @@ async fn write_through_envoy_lands_in_opensearch() {
         .start()
         .await
         .expect("envoy starts");
-    let envoy_host = envoy.get_host().await.unwrap();
-    let envoy_port = envoy.get_host_port_ipv4(10000).await.unwrap();
+    let host = envoy.get_host().await.unwrap();
+    let port = envoy.get_host_port_ipv4(10000).await.unwrap();
+    (envoy, format!("http://{host}:{port}"))
+}
 
-    // 4. Write a document THROUGH Envoy (which calls our filter, which routes it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker; run with --ignored"]
+async fn write_then_read_through_envoy() {
+    let opensearch = start_opensearch().await;
+    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+
+    let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::new(
+        "opensearch",
+        "http://unused",
+        "x-tenant",
+    )));
+    let svc_port = spawn_service(filter);
+    let (_envoy, base) = start_envoy(svc_port, os_port).await;
     let http = reqwest::Client::new();
+
+    // Write a document THROUGH Envoy.
     let put = http
-        .put(format!("http://{envoy_host}:{envoy_port}/orders/_doc/42"))
+        .put(format!("{base}/orders/_doc/42"))
         .header("x-tenant", "acme")
         .header("content-type", "application/json")
-        .header("x-request-id", "e2e-1")
         .body(r#"{"k":1,"who":"e2e"}"#)
         .send()
         .await
         .expect("PUT through Envoy");
-    let status = put.status();
-    let ok = status.is_success();
-    let body = put.text().await.unwrap_or_default();
-    let logs = if ok {
-        String::new()
-    } else {
-        String::from_utf8(envoy.stderr_to_vec().await.unwrap_or_default()).unwrap_or_default()
-    };
     assert!(
-        ok,
-        "write via Envoy did not succeed: {status} body={body}\n--- envoy stderr ---\n{logs}"
+        put.status().is_success(),
+        "write via Envoy: {}",
+        put.status()
     );
 
-    // 5. Read it straight from OpenSearch (realtime GET) — it must have landed.
-    let got: serde_json::Value = http
-        .get(format!("http://127.0.0.1:{os_port}/orders/_doc/42"))
-        .send()
-        .await
-        .expect("GET from OpenSearch")
-        .json()
-        .await
-        .expect("json");
-    assert_eq!(
-        got["found"],
-        serde_json::Value::Bool(true),
-        "doc not found: {got}"
-    );
-    assert_eq!(got["_source"]["k"], serde_json::json!(1));
-    assert_eq!(got["_source"]["who"], serde_json::json!("e2e"));
-
-    // 6. Read the same document back THROUGH Envoy (the M2 read path: the GET
-    //    flows through our filter and is forwarded to OpenSearch).
-    let via_envoy: serde_json::Value = http
-        .get(format!("http://{envoy_host}:{envoy_port}/orders/_doc/42"))
+    // Read it back THROUGH Envoy.
+    let got: Value = http
+        .get(format!("{base}/orders/_doc/42"))
         .header("x-tenant", "acme")
         .send()
         .await
@@ -200,10 +180,103 @@ async fn write_through_envoy_lands_in_opensearch() {
         .json()
         .await
         .expect("json");
-    assert_eq!(
-        via_envoy["found"],
-        serde_json::Value::Bool(true),
-        "read via Envoy: {via_envoy}"
+    assert_eq!(got["found"], json!(true), "read via Envoy: {got}");
+    assert_eq!(got["_source"]["who"], json!("e2e"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker; run with --ignored"]
+async fn shared_index_isolates_tenants() {
+    let opensearch = start_opensearch().await;
+    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+
+    // Shared-index mode: both tenants share physical index `orders_shared`.
+    let config = FilterConfig {
+        cluster: "opensearch".to_owned(),
+        endpoint: "http://unused".to_owned(),
+        partition_header: "x-tenant".to_owned(),
+        shared_index: Some("orders_shared".to_owned()),
+        inject_field: "_tenant".to_owned(),
+    };
+    let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
+    let svc_port = spawn_service(filter);
+    let (envoy, base) = start_envoy(svc_port, os_port).await;
+    let http = reqwest::Client::new();
+
+    // Two tenants write a doc with the SAME natural key `id:1` to the SAME
+    // logical index. The shared-index id template `{partition}:{body.id}` scopes
+    // the physical id per tenant (acme:1 vs globex:1).
+    for (tenant, who) in [("acme", "a"), ("globex", "g")] {
+        let put = http
+            .put(format!("{base}/orders/_doc/1"))
+            .header("x-tenant", tenant)
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"id":1,"who":"{who}"}}"#))
+            .send()
+            .await
+            .expect("PUT through Envoy");
+        let status = put.status();
+        let ok = status.is_success();
+        let body = put.text().await.unwrap_or_default();
+        let logs = if ok {
+            String::new()
+        } else {
+            String::from_utf8(envoy.stderr_to_vec().await.unwrap_or_default()).unwrap_or_default()
+        };
+        assert!(ok, "{tenant} write {status}: {body}\n--- envoy ---\n{logs}");
+    }
+
+    // acme reads id `1` back: its own document, in its logical view (logical
+    // index + id, no injected `_tenant`).
+    let got: Value = http
+        .get(format!("{base}/orders/_doc/1"))
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("GET through Envoy")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(got["_index"], json!("orders"), "logical index: {got}");
+    assert_eq!(got["_id"], json!("1"), "logical id: {got}");
+    assert!(
+        got["_source"].get("_tenant").is_none(),
+        "isolation field stripped: {got}"
     );
-    assert_eq!(via_envoy["_source"]["who"], serde_json::json!("e2e"));
+    assert_eq!(
+        got["_source"]["who"],
+        json!("a"),
+        "acme sees its own doc: {got}"
+    );
+
+    // Make the writes searchable.
+    http.post(format!("http://127.0.0.1:{os_port}/orders_shared/_refresh"))
+        .send()
+        .await
+        .expect("refresh");
+
+    // acme searches: it sees ONLY its own document (isolation), logical view.
+    let search: Value = http
+        .post(format!("{base}/orders/_search"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(r#"{"query":{"match_all":{}}}"#)
+        .send()
+        .await
+        .expect("search through Envoy")
+        .json()
+        .await
+        .expect("json");
+    let hits = search["hits"]["hits"].as_array().expect("hits array");
+    assert_eq!(
+        hits.len(),
+        1,
+        "acme sees only its own doc (isolation): {search}"
+    );
+    assert_eq!(hits[0]["_id"], json!("1"), "logical id in hit");
+    assert_eq!(hits[0]["_source"]["who"], json!("a"));
+    assert!(
+        hits[0]["_source"].get("_tenant").is_none(),
+        "injected field stripped from hit"
+    );
 }

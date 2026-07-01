@@ -136,6 +136,21 @@ impl<R: Router> Filter<R> {
             }
         }
     }
+
+    /// The **response phase** (M2b): reshape a read's upstream response into the
+    /// client's logical view (strip injected fields, map physical ids back to
+    /// logical). `req` is rebuilt from the request headers the backend buffered;
+    /// `upstream_body` is the response body from the cluster. Returns the shaped
+    /// body, or `None` when there is nothing to do (the backend then forwards the
+    /// upstream body unchanged).
+    pub async fn shape_response(
+        &self,
+        req: &FilterRequest,
+        upstream_body: &[u8],
+    ) -> Option<Vec<u8>> {
+        let parts = evoxy_adapter::RequestParts::from_filter(req, "").ok()?;
+        evoxy_route::shape_read_response(&self.router, &parts.ctx(), upstream_body).await
+    }
 }
 
 /// Apply the decision's header mutations to the forwarded request.

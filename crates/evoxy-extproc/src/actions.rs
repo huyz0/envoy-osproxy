@@ -42,8 +42,11 @@ fn overwrite(name: &str, value: &str) -> HeaderValueOption {
     HeaderValueOption {
         header: Some(HeaderValue {
             key: name.to_owned(),
-            value: value.to_owned(),
-            raw_value: Vec::new(),
+            // Envoy applies the byte `raw_value`, not the deprecated string
+            // `value`; setting only `value` leaves the header empty (an empty
+            // `:path` becomes a malformed upstream request).
+            value: String::new(),
+            raw_value: value.as_bytes().to_vec(),
         }),
         append_action: OVERWRITE_IF_EXISTS_OR_ADD,
         ..Default::default()
@@ -64,33 +67,43 @@ impl ExtProcActions {
             return Err(immediate);
         }
         let mut set_headers = self.extra_headers;
+        let mut remove_headers = self.remove_headers;
         if let Some(method) = self.method.as_deref().filter(|m| *m != orig_method) {
             set_headers.push(overwrite(":method", method));
         }
-        let path_changed = self.path.as_deref().is_some_and(|p| p != orig_path);
         if let Some(path) = self.path.as_deref().filter(|p| *p != orig_path) {
             set_headers.push(overwrite(":path", path));
         }
         if let Some(cluster) = self.cluster.as_deref() {
             set_headers.push(overwrite(CLUSTER_HEADER, cluster));
         }
-        let header_mutation = if set_headers.is_empty() && self.remove_headers.is_empty() {
+        let body_mutation = self.body.map(|body| BodyMutation {
+            mutation: Some(body_mutation::Mutation::Body(body)),
+        });
+        // A changed body invalidates the client's `content-length`; drop it so
+        // Envoy recomputes from the mutated buffer (else it rejects the mismatch).
+        if body_mutation.is_some() {
+            remove_headers.push("content-length".to_owned());
+        }
+        let header_mutation = if set_headers.is_empty() && remove_headers.is_empty() {
             None
         } else {
             Some(HeaderMutation {
                 set_headers,
-                remove_headers: self.remove_headers,
+                remove_headers,
             })
         };
-        let body_mutation = self.body.map(|body| BodyMutation {
-            mutation: Some(body_mutation::Mutation::Body(body)),
-        });
         Ok(CommonResponse {
             status: 0, // CONTINUE
             header_mutation,
             body_mutation,
-            // Re-run route selection when we changed where the request goes.
-            clear_route_cache: self.cluster.is_some() || path_changed,
+            // Do NOT clear the route cache: with the static single-cluster route,
+            // re-routing is unnecessary, and clearing it mid-request causes Envoy
+            // to re-match on the transiently-empty `:path` (a `no route match for
+            // URL ''` → 404). The `:path` mutation still applies to the forwarded
+            // request. Header-driven multi-cluster re-routing is M2c (blocked on
+            // Envoy's ext_proc routing timing).
+            clear_route_cache: false,
             ..Default::default()
         })
     }

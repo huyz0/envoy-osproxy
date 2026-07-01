@@ -105,15 +105,20 @@ callback (no such race), and a future ext_proc mode (e.g. header-only routing, o
 `request_body_mode` tuning) can use them. The live e2e keeps the proven static
 single-cluster route.
 
-**(M2b) response-side reshaping — logic done.** `evoxy-route::shape_get_response`
-and `shape_search_response` return a document/hit in the client's logical view:
-`_index`/`_id` presented as logical (physical→logical id via
-`map_physical_to_logical`), and injected tenancy fields stripped from `_source` —
-the read-path inverse of the write transform, reusing the engine primitives. 2
-tests (`SharedIndex` strip + id-unmap for get-by-id and search); `ROUTE-RS*` spec.
-Remaining M2b: wire these onto Envoy's live response path (enable the response
-body mode, carry the routing decision from the request phase to the response
-phase), and prove it with a `SharedIndex` tenancy e2e.
+**(M2b) response-side reshaping — done and proven live.** `shape_get_response`/
+`shape_search_response` return a document/hit in the client's logical view
+(`_index`/`_id` logical via `map_physical_to_logical`, injected fields stripped
+from `_source`); `shape_read_response` resolves + dispatches. Wired onto the ext_proc
+**response path** (`response_body_mode: BUFFERED`; the response phase rebuilds the
+request from the buffered headers and reshapes the body; `content-length` dropped
+so Envoy recomputes). `ReferenceTenancy` gained a **shared-index mode** (config
+`shared_index`): inject the isolation field + partition-scoped id.
+
+**Multi-tenant isolation proven end-to-end (`shared_index_isolates_tenants`):**
+two tenants (`acme`, `globex`) write the same natural key to one shared physical
+index through stock Envoy; each reads back and searches seeing **only its own
+document**, in its logical view (logical id, `_tenant` stripped) — inject-on-write,
+partition-scoped id, query partition-filter, and strip/unmap-on-read, all live.
 
 **(M2c multi-cluster e2e)** — prove cluster selection via the dynamic module's
 header-phase routing (uses the `resolve_cluster`/`route_headers` primitives), or a

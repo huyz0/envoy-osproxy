@@ -61,12 +61,48 @@ async fn process_message<R: Router>(
         Some(Req::RequestBody(body)) => {
             finalize(filter, state.headers.clone(), body.body, Phase::Body).await
         }
-        // M1 configures ext_proc for the request path only; other phases just
-        // continue unmodified.
+        // Response path (M2b): reshape a read's response into the client's logical
+        // view. Headers just continue; the body is shaped (strip injected fields,
+        // map physical ids back to logical) using the buffered request headers.
+        Some(Req::ResponseHeaders(_)) => wrap(Resp::ResponseHeaders(HeadersResponse {
+            response: Some(extproc::CommonResponse::default()),
+        })),
+        Some(Req::ResponseBody(body)) => {
+            let req = convert::filter_request(state.headers.clone(), Vec::new());
+            let shaped = filter.shape_response(&req, &body.body).await;
+            response_body(shaped)
+        }
+        // Trailers etc.: continue unmodified.
         _ => wrap(Resp::RequestBody(BodyResponse {
             response: Some(extproc::CommonResponse::default()),
         })),
     }
+}
+
+/// Build the response-body-phase reply: replace the body when it was reshaped,
+/// else continue with it unchanged. A reshaped body changes length, so drop the
+/// upstream `content-length` (Envoy recomputes it, else it rejects the mismatch).
+fn response_body(shaped: Option<Vec<u8>>) -> ProcessingResponse {
+    let (body_mutation, header_mutation) = match shaped {
+        Some(body) => (
+            Some(extproc::BodyMutation {
+                mutation: Some(extproc::body_mutation::Mutation::Body(body)),
+            }),
+            Some(extproc::HeaderMutation {
+                remove_headers: vec!["content-length".to_owned()],
+                ..Default::default()
+            }),
+        ),
+        None => (None, None),
+    };
+    let common = extproc::CommonResponse {
+        body_mutation,
+        header_mutation,
+        ..Default::default()
+    };
+    wrap(Resp::ResponseBody(BodyResponse {
+        response: Some(common),
+    }))
 }
 
 /// Which request phase a response is for (they carry the same `CommonResponse`

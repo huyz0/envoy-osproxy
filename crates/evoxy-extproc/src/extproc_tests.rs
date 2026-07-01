@@ -67,7 +67,7 @@ fn set_header(common: &CommonResponse, key: &str) -> Option<String> {
         .iter()
         .filter_map(|opt| opt.header.as_ref())
         .find(|hv| hv.key.eq_ignore_ascii_case(key))
-        .map(|hv| hv.value.clone())
+        .map(|hv| String::from_utf8_lossy(&hv.raw_value).into_owned())
 }
 
 fn mutated_body(common: &CommonResponse) -> Option<Vec<u8>> {
@@ -107,14 +107,15 @@ async fn body_phase_mutates_route_and_body() {
     let resp = process_message(&filter, &mut state, body_msg(br#"{"k":1}"#)).await;
     let common = body_common(resp);
 
-    // Cluster header selects the upstream; the body is rewritten; route cache is
-    // cleared so the header re-routes.
+    // Cluster header records the routing decision; the body is rewritten.
     assert_eq!(
         set_header(&common, "x-evoxy-cluster").as_deref(),
         Some("opensearch")
     );
     assert_eq!(mutated_body(&common).as_deref(), Some(&b"{\"k\":1}"[..]));
-    assert!(common.clear_route_cache);
+    // The route cache is NOT cleared: with the static route, clearing it would
+    // re-match on the transiently-empty `:path` (see actions::finish).
+    assert!(!common.clear_route_cache);
     // The reference tenancy leaves the request line unchanged, so `:method` and
     // `:path` are NOT re-emitted (re-emitting an unchanged `:path` would empty it).
     assert_eq!(set_header(&common, ":method"), None);
