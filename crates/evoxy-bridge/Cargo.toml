@@ -1,0 +1,15 @@
+[package]
+name = "evoxy-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The async fan-out bridge (ADR-005): turns an Envoy-mirrored request into a Kafka record over osproxy's Producer seam. A separate deployment artifact, not the Envoy extension."
+
+[dependencies]
+osproxy-kafka.workspace = true
+
+[lints]
+workspace = true

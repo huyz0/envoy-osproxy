@@ -257,8 +257,12 @@ seam) produces, the filter stays pure. **The mechanism is now proven live**
 (`tests/mirror.rs`): a write through stock Envoy lands in OpenSearch *and* Envoy
 mirrors the request **as the filter transformed it** (physical index,
 partition-scoped id `acme%3A1`, injected `_tenant`) to a recording bridge —
-fire-and-forget, no Kafka producer in the extension. Only the bridge's actual
-Kafka produce (ordinary producer code over osproxy's `krafka` seam) is left.
+fire-and-forget, no Kafka producer in the extension. The **bridge core is built**
+too — the `evoxy-bridge` crate turns a mirrored request into a Kafka record
+(key = physical path for per-document order, payload = transformed body) over
+osproxy's `Producer` seam, so osproxy's real `KrafkaProducer` plugs in with one
+line (unit-tested with the recording `InMemoryProducer`). Only wiring the real
+broker + a live Kafka round-trip is left — ordinary producer/deploy work.
 
 ## M6 — FIPS — **done**
 

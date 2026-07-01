@@ -73,9 +73,16 @@ marking the request mirror-eligible.
   (physical index `orders_shared`, partition-scoped percent-encoded id
   `acme%3A1`, injected `_tenant`) — to a second cluster, a recording bridge. So the
   Envoy-native fan-out carries the *physical* request, fire-and-forget, with the
-  filter staying pure. The recording bridge stands in for the HTTP→Kafka producer;
-  the produce itself (osproxy's `krafka`/async-write seam) is the only remaining
-  piece, and it is ordinary producer code, not novel.
+  filter staying pure. The recording bridge stands in for the HTTP→Kafka producer.
+- **The bridge core is built** — the `evoxy-bridge` crate turns a mirrored request
+  into a Kafka record (`key` = the physical path, so a document's records keep
+  their order; `payload` = the transformed body) and produces it over osproxy's
+  `Producer` seam. Because it is the *same* seam osproxy's `KrafkaProducer`
+  implements, the deployment swaps the recording `InMemoryProducer` for the real
+  broker client with one line. `evoxy-bridge` is a **separate deployment artifact**,
+  not the Envoy extension (so it is outside the `crypto-free` gate); the filter
+  stays pure. Only wiring the real broker + a live Kafka round-trip is left, and
+  that is ordinary producer/deploy work, not novel.
 - If a future need requires the produce to be synchronous/transactional with the
   write (true exactly-once across OpenSearch + Kafka), that is a different problem
   than fan-out and would get its own ADR.

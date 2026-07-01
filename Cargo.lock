@@ -451,6 +451,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "evoxy-bridge"
+version = "0.0.0"
+dependencies = [
+ "osproxy-kafka",
+]
+
+[[package]]
 name = "evoxy-extproc"
 version = "0.0.0"
 dependencies = [
@@ -1234,10 +1241,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "osproxy-capture"
+version = "1.0.1"
+dependencies = [
+ "osproxy-spi",
+]
+
+[[package]]
 name = "osproxy-core"
 version = "1.0.1"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "osproxy-kafka"
+version = "1.0.1"
+dependencies = [
+ "osproxy-capture",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

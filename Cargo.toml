@@ -6,6 +6,7 @@ members = [
     "crates/evoxy-route",
     "crates/evoxy-filter",
     "crates/evoxy-extproc",
+    "crates/evoxy-bridge",
     "xtask",
 ]
 
@@ -39,6 +40,10 @@ osproxy-rewrite = { path = "../opensearch-proxy/crates/osproxy-rewrite" }
 # The pure NFR-P bench crate (LatencySummary / NfrProfile / judge) — dev-only,
 # reused for the proxy-vs-direct A/B verdict (M7, docs/00 §6).
 osproxy-bench = { path = "../opensearch-proxy/crates/osproxy-bench" }
+# The Kafka producer seam (Producer / ProduceError / InMemoryProducer) reused by
+# the fan-out bridge (ADR-005), so osproxy's real `KrafkaProducer` plugs straight
+# in. The seam crate is light (no broker client, no crypto).
+osproxy-kafka = { path = "../opensearch-proxy/crates/osproxy-kafka" }
 
 # Internal crates.
 evoxy-abi = { path = "crates/evoxy-abi" }
