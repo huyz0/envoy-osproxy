@@ -127,3 +127,32 @@ async fn config_defaults_are_lenient() {
     assert_eq!(config.cluster, "opensearch");
     assert_eq!(config.partition_header, "x-tenant");
 }
+
+#[tokio::test]
+async fn route_headers_sets_only_the_cluster() {
+    // The header-phase routing entry (M2c): resolve + set the cluster, nothing else.
+    let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);
+    let mut actions = FakeActions::default();
+
+    let decision = filter().route_headers(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::ContinueUpstream);
+    assert_eq!(actions.cluster.as_deref(), Some("opensearch"));
+    // Header phase only: no path/body/method mutation, no local reply.
+    assert!(actions.path.is_none());
+    assert!(actions.body.is_none());
+    assert!(actions.local_reply.is_none());
+}
+
+#[tokio::test]
+async fn route_headers_fails_closed_when_unresolved() {
+    let req = request("PUT", "/orders/_doc/42", None, br#"{"k":1}"#);
+    let mut actions = FakeActions::default();
+
+    let decision = filter().route_headers(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::StoppedWithLocalReply);
+    assert!(actions.cluster.is_none());
+    let (status, _) = actions.local_reply.expect("a local reply");
+    assert_eq!(status, 400);
+}

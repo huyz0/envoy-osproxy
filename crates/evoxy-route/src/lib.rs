@@ -103,6 +103,37 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
     }
 }
 
+/// Resolve just the upstream cluster for a request — the header-phase routing
+/// decision (M2c). The partition comes from the request headers (for a
+/// header-keyed tenancy), so the cluster is known before the body arrives; the
+/// filter sets it at the header phase so Envoy routes on `x-evoxy-cluster`, and
+/// applies the body/path transform at the body phase. Returns the logical
+/// `ClusterId`, or a fail-closed [`FilterResponse`] for an unhandled endpoint or
+/// a resolution error.
+///
+/// # Errors
+/// A [`FilterResponse`] (501 for an unsupported endpoint, or the mapped routing
+/// status) that the filter should send as an immediate reply.
+pub async fn resolve_cluster<R: Router + ?Sized>(
+    router: &R,
+    ctx: &RequestCtx<'_>,
+) -> Result<String, FilterResponse> {
+    if !matches!(
+        ctx.endpoint(),
+        EndpointKind::IngestDoc
+            | EndpointKind::GetById
+            | EndpointKind::DeleteById
+            | EndpointKind::Search
+            | EndpointKind::Count
+    ) {
+        return Err(immediate(501, "endpoint_not_supported_yet"));
+    }
+    match router.resolve(ctx).await {
+        Ok(resolved) => Ok(resolved.decision.target.cluster.as_str().to_owned()),
+        Err(err) => Err(immediate(spi_status(&err), spi_code(&err))),
+    }
+}
+
 /// The single-document write path: apply the body transform and build the forward.
 fn write_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
     let transformed = match transform::apply(

@@ -276,6 +276,28 @@ async fn count_routes_to_physical_index() {
 }
 
 #[tokio::test]
+async fn resolve_cluster_returns_target_cluster() {
+    let req = request("PUT", "/orders/_doc/42", Some("acme"), b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let cluster = crate::resolve_cluster(&router(dedicated_index(), None), &parts.ctx())
+        .await
+        .expect("a cluster");
+    assert_eq!(cluster, "eu-1");
+}
+
+#[tokio::test]
+async fn resolve_cluster_fails_closed_on_unresolved_partition() {
+    let req = request("PUT", "/orders/_doc/42", None, b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let err = crate::resolve_cluster(&router(dedicated_index(), None), &parts.ctx())
+        .await
+        .expect_err("a fail-closed response");
+    assert_eq!(err.status, 400);
+}
+
+#[tokio::test]
 async fn malformed_body_fails_closed_400() {
     let placement = Placement::DedicatedIndex {
         cluster: ClusterId::from("eu-1"),

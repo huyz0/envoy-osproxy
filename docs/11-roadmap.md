@@ -91,12 +91,24 @@ new `evoxy-route` tests cover dedicated passthrough, `SharedIndex` id-map, and t
 search filter. The e2e now also **reads the document back through Envoy**
 (verified live), so write→read round-trips end to end.
 
+**(M2c) header-phase routing — foundation done; live ext_proc re-routing blocked.**
+`evoxy-route::resolve_cluster` and `evoxy-filter::route_headers` resolve the
+upstream cluster from the request headers (before the body) and set it — the
+header-phase routing primitives, unit-tested. **Finding:** wiring this into the
+live ext_proc path does **not** re-route: with `request_body_mode: BUFFERED`,
+Envoy commits the upstream (`pool ready`) *before* applying the ext_proc header
+response, so `x-evoxy-cluster` + `clear_route_cache` arrive too late (a header-
+phase clear before a body phase even 504s). This is an Envoy ext_proc timing
+nuance, not a defect in the routing logic. The primitives stay as the foundation:
+the **dynamic module** sets headers directly on the map at its `request_headers`
+callback (no such race), and a future ext_proc mode (e.g. header-only routing, or
+`request_body_mode` tuning) can use them. The live e2e keeps the proven static
+single-cluster route.
+
 Remaining M2: **(M2b) response-side reshaping** — strip injected fields from
-`_source` and map physical ids back to logical, on Envoy's response path
-(`response_headers`/`response_body` phase). **(M2c) header-phase routing** — move
-cluster selection (and path rewrite) to the header phase so the `x-evoxy-cluster`
-route match works, unlocking multi-cluster selection for both backends (the
-body-phase header mutation from M1 does not reliably re-route).
+`_source` and map physical ids back to logical, on Envoy's response path. **(M2c
+multi-cluster e2e)** — prove cluster selection via the dynamic module's
+header-phase routing, or a resolved ext_proc routing mode.
 
 ## M3 — `_bulk` / `_mget` / `_msearch`
 

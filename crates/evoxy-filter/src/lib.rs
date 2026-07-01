@@ -103,6 +103,39 @@ impl<R: Router> Filter<R> {
             }
         }
     }
+
+    /// The **header-phase routing** decision (M2c): resolve only the upstream
+    /// cluster (from the request headers) and set it, so Envoy routes on
+    /// `x-evoxy-cluster` before the body arrives. The body/path transform is
+    /// applied later by [`Filter::handle`] at the body phase. Used by backends
+    /// where the routing header must be set at the header phase to take effect
+    /// (both ext_proc's re-route and the dynamic module's header-only handle).
+    pub async fn route_headers(
+        &self,
+        req: &FilterRequest,
+        actions: &mut dyn EnvoyActions,
+    ) -> FilterDecision {
+        let request_id = req.header("x-request-id").unwrap_or("");
+        let parts = match evoxy_adapter::RequestParts::from_filter(req, request_id) {
+            Ok(parts) => parts,
+            Err(err) => {
+                let body = format!("{{\"error\":\"{}\"}}", adapt_code(&err)).into_bytes();
+                actions.send_local_reply(400, &json_headers(), &body);
+                return FilterDecision::StoppedWithLocalReply;
+            }
+        };
+
+        match evoxy_route::resolve_cluster(&self.router, &parts.ctx()).await {
+            Ok(cluster) => {
+                actions.set_upstream_cluster(&cluster);
+                FilterDecision::ContinueUpstream
+            }
+            Err(resp) => {
+                actions.send_local_reply(resp.status, &resp.headers, &resp.body);
+                FilterDecision::StoppedWithLocalReply
+            }
+        }
+    }
 }
 
 /// Apply the decision's header mutations to the forwarded request.
