@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# xtask deliberately does NOT opt into the workspace lints: it is build tooling,
+# not shipped library code, and it legitimately shells out and prints.
+
+[dependencies]

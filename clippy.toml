@@ -1,0 +1,20 @@
+# Tests may `unwrap`/`expect`: a panic there is a test failure, which is the
+# point. Library code stays panic-free via the workspace deny-lints — especially
+# load-bearing here since a dynamic-module panic crashes the Envoy worker.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Complexity budgets — see docs/08-engineering-standards.md.
+too-many-lines-threshold = 60
+too-many-arguments-threshold = 7
+cognitive-complexity-threshold = 15
+
+# Domain identifiers that are not missing-backticks violations in docs.
+doc-valid-idents = ["OpenSearch", "NDJSON", "Envoy", "ext_proc", "mTLS", "XFCC", ".."]
+
+# Determinism (docs/09): behavior must not depend on wall-clock/RNG read directly.
+# Code takes an injected clock instead. Sanctioned call sites carry `#[allow]`.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "inject a Clock instead (docs/09)" },
+    { path = "std::time::SystemTime::now", reason = "inject a Clock instead (docs/09)" },
+]

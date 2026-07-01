@@ -1,0 +1,14 @@
+[package]
+name = "evoxy-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Envoy filter-facing wire model: the request/response an ext_proc or dynamic-module filter exchanges with Envoy."
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "evoxy-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The one seam: maps an Envoy FilterRequest into the osproxy RequestCtx the engine already consumes."
+
+[dependencies]
+evoxy-abi.workspace = true
+osproxy-core.workspace = true
+osproxy-spi.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Deterministic instruction-count microbenchmarks, pinned exact so the installed
+# runner matches (mirrors the osproxy sister project's bench discipline, docs/09).
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "adapt"
+harness = false
+
+[lints]
+workspace = true
