@@ -6,8 +6,9 @@
 //! and `require_mtls_for_mutation`, so this exercises the whole M4 chain: Envoy
 //! validates the client cert and sets XFCC; `convert` parses it into the identity;
 //! the mTLS-for-mutation policy admits the write (a cert was presented); and the
-//! partition is the **Envoy-validated principal** (the cert Subject), not a client
-//! header — so the stored physical doc carries `_tenant = CN=acme`.
+//! partition is the **Envoy-validated SPIFFE principal** (the cert's URI SAN), not
+//! a client header — so the stored physical doc carries `_tenant = spiffe://td/acme`
+//! (its slashes percent-encoded in the doc-id path, decoded by OpenSearch).
 //!
 //! Certificates (CA + server + client) are generated at runtime with `rcgen`, so
 //! nothing secret is committed. The client→Envoy leg is TLS; Envoy re-originates
@@ -20,17 +21,17 @@ use std::time::Duration;
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
 use evoxy_filter::{Filter, FilterConfig, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
-use rcgen::{CertificateParams, DnType, KeyPair, SanType};
+use rcgen::{CertificateParams, DnType, Ia5String, KeyPair, SanType};
 use serde_json::{json, Value};
 use testcontainers::core::{ContainerPort, Host, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio_stream::wrappers::TcpListenerStream;
 
-/// The identity the client certificate carries (its Subject DN, since it has no
-/// URI SAN) — also the tenant the principal resolves to. A DN is a valid path
-/// segment (unlike a SPIFFE URI, whose slashes would need id percent-encoding).
-const CLIENT_PRINCIPAL: &str = "CN=acme";
+/// The SPIFFE identity the client certificate carries (its URI SAN) — also the
+/// tenant the principal resolves to. Its slashes are percent-encoded in the
+/// doc-id path (evoxy-route::encode) and decoded by OpenSearch.
+const CLIENT_PRINCIPAL: &str = "spiffe://td/acme";
 
 /// A generated PKI: PEM bytes for the pieces each party needs.
 struct Pki {
@@ -42,7 +43,7 @@ struct Pki {
 }
 
 /// Generate a CA, a server cert (for the Envoy listener, valid for `127.0.0.1`),
-/// and a client cert whose Subject is [`CLIENT_PRINCIPAL`].
+/// and a client cert whose URI SAN is [`CLIENT_PRINCIPAL`].
 fn generate_pki() -> Pki {
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
@@ -62,13 +63,16 @@ fn generate_pki() -> Pki {
         .signed_by(&server_key, &ca_cert, &ca_key)
         .unwrap();
 
-    // Client cert: no URI SAN, so the identity is the Subject DN (`CN=acme`),
-    // which Envoy forwards as XFCC and our `stable_id` falls back to.
+    // Client cert: a SPIFFE URI SAN is the identity Envoy forwards as XFCC and our
+    // `stable_id` prefers.
     let client_key = KeyPair::generate().unwrap();
     let mut client_params = CertificateParams::new(Vec::new()).unwrap();
     client_params
         .distinguished_name
-        .push(DnType::CommonName, "acme");
+        .push(DnType::CommonName, "acme-client");
+    client_params
+        .subject_alt_names
+        .push(SanType::URI(Ia5String::try_from(CLIENT_PRINCIPAL).unwrap()));
     let client_cert = client_params
         .signed_by(&client_key, &ca_cert, &ca_key)
         .unwrap();

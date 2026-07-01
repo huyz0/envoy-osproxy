@@ -26,6 +26,7 @@
 
 mod bulk;
 mod demux;
+mod encode;
 mod read;
 mod response;
 mod transform;
@@ -314,10 +315,16 @@ fn by_id_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
     };
 
     let target = &resolved.decision.target;
-    let mut path = format!("/{}/_doc/{physical_id}", target.index.as_str());
+    // Percent-encode the id segment so a slash-bearing id (a URI principal) stays
+    // one path segment; OpenSearch decodes it back to the exact id.
+    let mut path = format!(
+        "/{}/_doc/{}",
+        target.index.as_str(),
+        encode::encode(&physical_id)
+    );
     if let Some(routing) = routing {
         path.push_str("?routing=");
-        path.push_str(&routing);
+        path.push_str(&encode::encode(&routing));
     }
 
     Forward::Upstream(PreparedForward {
@@ -369,12 +376,14 @@ fn method_str(method: osproxy_spi::HttpMethod) -> &'static str {
 /// known, else `POST /{index}/_doc`, appending `?routing=` when set.
 fn write_path(index: &str, id: Option<&str>, routing: Option<&str>) -> (&'static str, String) {
     let (method, mut path) = match id {
-        Some(id) => ("PUT", format!("/{index}/_doc/{id}")),
+        // The id is percent-encoded (a constructed id may embed a URI partition);
+        // the index name has no reserved chars, so it is left as-is.
+        Some(id) => ("PUT", format!("/{index}/_doc/{}", encode::encode(id))),
         None => ("POST", format!("/{index}/_doc")),
     };
     if let Some(routing) = routing {
         path.push_str("?routing=");
-        path.push_str(routing);
+        path.push_str(&encode::encode(routing));
     }
     (method, path)
 }

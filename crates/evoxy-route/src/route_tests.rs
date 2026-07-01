@@ -153,7 +153,8 @@ async fn shared_index_injects_partition_and_constructs_routed_id() {
     );
     assert_eq!(prepared.cluster, "eu-1");
     assert_eq!(prepared.method, "PUT");
-    assert_eq!(prepared.path, "/shared/_doc/acme:1001?routing=acme");
+    // The `:` in the constructed id is percent-encoded in the path.
+    assert_eq!(prepared.path, "/shared/_doc/acme%3A1001?routing=acme");
     let body: Value = serde_json::from_slice(&prepared.body).unwrap();
     assert_eq!(body["_tenant"], Value::String("acme".to_owned()));
     assert_eq!(body["id"], Value::from(1001));
@@ -232,7 +233,37 @@ async fn shared_index_get_by_id_constructs_physical_id() {
         .await,
     );
     assert_eq!(prepared.method, "DELETE");
-    assert_eq!(prepared.path, "/shared/_doc/acme:1001?routing=acme");
+    assert_eq!(prepared.path, "/shared/_doc/acme%3A1001?routing=acme");
+}
+
+#[tokio::test]
+async fn slash_bearing_id_is_percent_encoded_in_path() {
+    // A URI principal (a SPIFFE id) makes the constructed id contain `/` and `:`;
+    // both are percent-encoded so the id stays a single path segment.
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    let req = request(
+        "POST",
+        "/shared/_doc",
+        Some("spiffe://td/acme"),
+        br#"{"id":1}"#,
+    );
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(
+        prepare(
+            &router(shared("eu-1", "shared", inject), Some(id_rule)),
+            &parts.ctx(),
+        )
+        .await,
+    );
+    assert_eq!(
+        prepared.path,
+        "/shared/_doc/spiffe%3A%2F%2Ftd%2Facme%3A1?routing=spiffe%3A%2F%2Ftd%2Facme"
+    );
 }
 
 #[tokio::test]

@@ -221,13 +221,15 @@ cert principal. The decisive assertion queries OpenSearch **directly** and finds
 the stored physical doc's `_tenant` is `CN=acme` (the Envoy-validated principal),
 partition-scoped id `CN=acme:1` — the identity, not a header, drove tenancy.
 
-**Finding — a doc id derived from a slash-bearing principal (a SPIFFE URI) needs
-path percent-encoding.** The proof uses the cert Subject DN (`CN=acme`, a valid
-path segment); a `spiffe://td/acme` principal would build
-`/idx/_doc/spiffe://td/acme:1`, whose slashes OpenSearch rejects (`no handler
-found`). Percent-encoding the doc-id path segment on write and by-id read is a
-small routing hardening, tracked as a follow-up (the id is unchanged in `_bulk`/
-`_mget`/`_msearch`, which carry it in JSON, not the path).
+**Finding, now resolved — a doc id derived from a slash-bearing principal (a
+SPIFFE URI) needs path percent-encoding.** A `spiffe://td/acme` principal builds
+the physical id `spiffe://td/acme:1`, whose slashes, left raw, split the `:path`
+and OpenSearch rejects it (`no handler found`). `evoxy-route::encode` now
+percent-encodes the doc-id segment and `_routing` value on the write and by-id
+paths; OpenSearch decodes them back to the exact id, so the stored id and every
+response are unchanged (`_bulk`/`_mget`/`_msearch` carry the id in JSON, not the
+path, and are untouched). The mTLS e2e now uses a real SPIFFE **URI SAN** and
+asserts the stored `_tenant`/id are `spiffe://td/acme` end to end.
 
 ## M5 — migration + async fan-out
 
