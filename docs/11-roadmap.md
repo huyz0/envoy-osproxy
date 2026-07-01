@@ -29,8 +29,15 @@ Envoy** loading our `.so`, and asserts a single document written through Envoy i
 routed/transformed and round-trips. Reuse a reference tenancy/routing impl.
 
 Sub-steps: (1a) `evoxy-route` — reuse routing SPI + `osproxy-rewrite` to produce
-the mutated request from a `RequestCtx`, with unit tests; (1b) the dynamic-module
-cdylib against the Envoy Rust SDK; (1c) the Envoy+OpenSearch testcontainer test.
+the mutated request from a `RequestCtx`, with unit tests; (1b) `evoxy-filter` —
+the dynamic-module cdylib against the Envoy Rust SDK, exposing the `register!`
+SPI-packaging API (ADR-003) + a default reference-tenancy artifact; (1c) the
+Envoy+OpenSearch testcontainer test.
+
+User-facing SPI model is settled in ADR-003 and shown in
+[06-wiring-example](06-wiring-example.md): the user implements the same
+`osproxy-spi` traits, statically compiled into a `cdylib` via `register!`, and
+drops the `Sink` seam (Envoy forwards).
 
 ## M2 — read path
 
