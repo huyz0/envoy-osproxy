@@ -8,11 +8,14 @@
 //! the Envoy handle.
 //!
 //! Unlike the earlier prototype ABI, this SDK can **enumerate** the request header
-//! map and **mutate** headers (`:method`/`:path` included) plus the body buffer, so
-//! the module applies the *full* transform-then-forward (ADR-002): path rewrite,
-//! header inject, body splice, and the fail-closed local reply. Cluster override
-//! is not exposed by this SDK rev; the reference tenancy static-routes to the one
-//! configured upstream, so `set_upstream_cluster` is recorded but not applied here.
+//! map and **mutate** headers (`:method`/`:path` included) plus both the request and
+//! response body buffers, so the module applies the *full* transform-then-forward
+//! (ADR-002): on the request — path rewrite, header inject, body splice (with
+//! `content-length` kept in sync), and the fail-closed local reply; on the response
+//! — reshaping a read back into the client's logical view (strip injected fields,
+//! unmap physical ids). Cluster override is not exposed by this SDK rev; the
+//! reference tenancy static-routes to the one configured upstream, so
+//! `set_upstream_cluster` is recorded but not applied here.
 
 use std::sync::Arc;
 
@@ -137,6 +140,47 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for EvoxyFilter {
         self.process(envoy, body);
         abi::envoy_dynamic_module_type_on_http_filter_request_body_status::Continue
     }
+
+    fn on_response_headers(
+        &mut self,
+        _envoy: &mut EHF,
+        end_of_stream: bool,
+    ) -> abi::envoy_dynamic_module_type_on_http_filter_response_headers_status {
+        if end_of_stream {
+            // No body to reshape (e.g. a bodyless response); let it through.
+            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
+        } else {
+            // Hold the response headers until the body is reshaped, so the updated
+            // `content-length` goes out with the (possibly grown/shrunk) body.
+            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::StopIteration
+        }
+    }
+
+    fn on_response_body(
+        &mut self,
+        envoy: &mut EHF,
+        end_of_stream: bool,
+    ) -> abi::envoy_dynamic_module_type_on_http_filter_response_body_status {
+        if !end_of_stream {
+            return abi::envoy_dynamic_module_type_on_http_filter_response_body_status::StopIterationAndBuffer;
+        }
+        let body: Vec<u8> = envoy
+            .get_buffered_response_body()
+            .map(|slices| slices.iter().flat_map(|s| s.as_slice().to_vec()).collect())
+            .unwrap_or_default();
+        // Reshape into the client's logical view (strip injected fields, unmap ids),
+        // recomputing the placement from the captured request headers.
+        let req = build_request(&self.headers, Vec::new());
+        if let Some(shaped) = self.shared.module.on_response(&req, &body) {
+            let existing = envoy.get_buffered_response_body_size();
+            if existing > 0 {
+                envoy.drain_buffered_response_body(existing);
+            }
+            envoy.append_buffered_response_body(&shaped);
+            envoy.set_response_header("content-length", shaped.len().to_string().as_bytes());
+        }
+        abi::envoy_dynamic_module_type_on_http_filter_response_body_status::Continue
+    }
 }
 
 impl EvoxyFilter {
@@ -215,6 +259,10 @@ impl SdkActions {
                     envoy.drain_buffered_request_body(existing);
                 }
                 envoy.append_buffered_request_body(&body);
+                // Keep `content-length` in sync with the new body, or Envoy forwards
+                // only the original length — truncating a grown body (e.g. `_tenant`
+                // injection) and over-reading a shrunk one.
+                envoy.set_request_header("content-length", body.len().to_string().as_bytes());
             }
         }
     }

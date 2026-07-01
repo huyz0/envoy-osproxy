@@ -34,10 +34,10 @@ cargo build --release --features sdk   # produces target/release/libevoxy_module
 ```
 
 Or, reproducibly, build the module **and** bake it into a stock Envoy image in one
-step (run from `~/work`, the parent of both repos):
+step:
 
 ```sh
-docker build -f envoy-osproxy/crates/evoxy-module/docker/Dockerfile -t evoxy-envoy:v1.37.0 .
+cargo xtask module-image
 ```
 
 ## Integration contract (what `src/lib.rs` wires)
@@ -73,15 +73,20 @@ The non-SDK wiring is in [`src/lib.rs`](src/lib.rs) and is written against
 **Verified live (not estimated):** the built `libevoxy_module.so` is loaded by a
 **stock, unmodified `envoyproxy/envoy:v1.37.0`** (the ABI hash matches — Envoy
 accepts the `DynamicModuleFilter` config and reaches its dispatch loop with no
-rejection), and driven end-to-end against a real OpenSearch by the 3-leg latency
-harness `evoxy-extproc/tests/perf_module.rs`. Measured: the in-process module adds
-**no milliseconds over Envoy** (its cost is below Envoy's own proxying jitter),
-versus the ext_proc backend's measured **+2.3 ms** out-of-process hop — see
+rejection). Two live harnesses drive it against a real OpenSearch:
+`evoxy-extproc/tests/perf_module.rs` (the 3-leg latency A/B) and
+`evoxy-extproc/tests/e2e_module.rs` (correctness — dedicated write/read and a
+shared-index multi-tenant isolation round-trip that exercises the request *and*
+response transform). Measured: the in-process module adds **no milliseconds over
+Envoy** (its cost is below Envoy's own proxying jitter), versus the ext_proc
+backend's measured **+2.3 ms** out-of-process hop — see
 [docs/12](../../docs/12-backend-comparison.md).
 
 Unlike the earlier prototype ABI, this SDK **can** enumerate + mutate the request
-header map and the body buffer, so the module applies the *full*
-transform-then-forward (path rewrite, header inject, body splice, fail-closed
-reply). Cluster override is not exposed by this SDK rev; the reference tenancy
-static-routes to the one configured upstream, so `set_upstream_cluster` is recorded
-but not applied (the physical-index rewrite rides on `set_path`).
+header map and both body buffers, so the module applies the *full*
+transform-then-forward: on the request — path rewrite, header inject, body splice
+(with `content-length` re-synced), fail-closed reply; on the response — reshaping a
+read into the client's logical view (strip injected fields, unmap ids). Cluster
+override is not exposed by this SDK rev; the reference tenancy static-routes to the
+one configured upstream, so `set_upstream_cluster` is recorded but not applied (the
+physical-index rewrite rides on `set_path`).

@@ -37,6 +37,16 @@ impl<R: Router> Module<R> {
     pub fn on_request(&self, req: &FilterRequest, actions: &mut dyn EnvoyActions) -> FilterDecision {
         self.runtime.block_on(self.filter.handle(req, actions))
     }
+
+    /// Reshape a read's upstream response into the client's logical view (strip
+    /// injected fields, map physical ids back to logical). `req` is rebuilt from the
+    /// captured request headers; `upstream_body` is the cluster's response body.
+    /// Returns the shaped body, or `None` when there is nothing to do (the caller
+    /// then forwards the upstream body unchanged). Resolves without I/O, like
+    /// [`Module::on_request`].
+    pub fn on_response(&self, req: &FilterRequest, upstream_body: &[u8]) -> Option<Vec<u8>> {
+        self.runtime.block_on(self.filter.shape_response(req, upstream_body))
+    }
 }
 
 /// Build the default module (the reference tenancy) from an Envoy `filter_config`
