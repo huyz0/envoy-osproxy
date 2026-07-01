@@ -2,20 +2,20 @@
 
 Orientation for AI agents on **envoy-osproxy**. A router + invariants list; it
 does **not** repeat the detail in [`docs/`](docs/). On conflict, the doc wins for
-its topic — fix the drift.
+its topic, fix the drift.
 
 ## What this is
 
-The osproxy capability set — multi-tenant isolation, body reshaping, `_bulk`
+The osproxy capability set, multi-tenant isolation, body reshaping, `_bulk`
 demux, epoch-gated migration, shape-only observability with runtime directives,
-capture — delivered as an **extension of a stock Envoy**, never a fork or
+capture, delivered as an **extension of a stock Envoy**, never a fork or
 recompile of Envoy. Envoy owns the wire (TLS, HTTP codecs, pooling, LB, circuit
 breaking); our Rust code is the brain, plugged in behind an Envoy extension seam.
 
 The port is tractable because the osproxy engine already split wire from brain:
 its `Pipeline::handle(&RequestCtx) -> PipelineResponse` is transport-agnostic. We
 **reuse those engine crates from crates.io** (`osproxy-core`/`-spi`/`-tenancy`/
-`-rewrite`, pinned) and replace only the transport — no other repository is
+`-rewrite`, pinned) and replace only the transport, no other repository is
 needed. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
 
 ## Crate map (downward-only deps, INV-1)
@@ -39,9 +39,9 @@ reuse osproxy's transport/server crates; Envoy replaces those.
    crashes the Envoy worker. `unwrap_used`/`expect_used`/`panic` are `deny`.
 4. **Faithful mapping, not policy.** The adapter maps Envoy→`RequestCtx` and back;
    authz/tenancy decisions stay in the reused engine. Fail-closed on unknowns.
-5. **Telemetry is shape-only and read-only** — inherited from osproxy (INV-6 there).
+5. **Telemetry is shape-only and read-only**, inherited from osproxy (INV-6 there).
 6. **Time is injected, never read directly** (docs/09); `Instant::now` is banned.
-7. **Keep the gate green** — `cargo xtask ci` passes before a task is done; new
+7. **Keep the gate green**, `cargo xtask ci` passes before a task is done; new
    behavior needs tests.
 
 ## Commands

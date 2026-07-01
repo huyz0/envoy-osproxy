@@ -1,100 +1,78 @@
 # envoy-osproxy
 
-Multi-tenant **OpenSearch proxy capabilities delivered as an extension of a stock
-Envoy** — without forking, patching, or recompiling Envoy. Point a standard
-`envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get:
+Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
+Envoy, without forking, patching, or recompiling Envoy. Point a standard
+`envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
+per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
+demux, epoch-gated migration, shape-only observability, and async fan-out.
 
-- **multi-tenant isolation** — per-tenant partitioning over shared or dedicated
-  indices, enforced on every read and write;
-- **request/response reshaping** — inject the tenant field, construct
-  partition-scoped document ids, wrap queries with the mandatory partition filter,
-  and unmap it all on the way back;
-- **`_bulk` / `_mget` / `_msearch` demux** with bounded memory (413/429 caps);
-- **epoch-gated migration** — a fleet-safe write gate (stale-epoch ⇒ 409);
-- **shape-only observability** — `/metrics`, `/debug/explain`, a decision header,
-  W3C trace propagation, and runtime diagnostics directives that leak no tenant
-  data;
-- **async fan-out** to a capture bridge via Envoy's request-mirror.
-
-## Two backends, one brain
-
-The same request-handling logic runs behind either Envoy extension seam — it's a
-deployment knob, not a rewrite (see [docs/12](docs/12-backend-comparison.md)):
-
-| backend | mechanism | measured added latency | trade-off |
-|---|---|---|---|
-| **ext_proc** | out-of-process gRPC sidecar | **+2.3 ms** over Envoy | process isolation, independent deploy, no build toolchain |
-| **dynamic module** | in-process Rust `.so` (upstream `dynamic_modules`) | **≈ 0 ms** over Envoy (in the noise) | lowest latency, shared crash domain |
-
-Both are verified live end-to-end through a **stock, unmodified** Envoy — the
-module is loaded via the upstream `DynamicModuleFilter` (no fork, no rebuild).
+The user guide is at **https://huyz0.github.io/envoy-osproxy/**.
 
 ## Built on osproxy
 
-This project **builds on top of [osproxy](https://github.com/huyz0/opensearch-proxy)**,
-the standalone OpenSearch proxy. It reuses osproxy's transport-agnostic engine
-crates (`osproxy-core`/`-spi`/`-tenancy`/`-rewrite`) from **crates.io** (pinned
-`=1.0.1`) — so a `cargo build` resolves everything and there is no other repository
-to check out. **osproxy owns the multi-tenant OpenSearch logic; this project hosts
-that logic inside a stock Envoy** instead of osproxy's own HTTP server:
+This project extends [osproxy](https://github.com/huyz0/opensearch-proxy), the
+standalone OpenSearch proxy, by running its logic inside Envoy instead of osproxy's
+own HTTP server. It reuses osproxy's transport-agnostic engine crates
+(`osproxy-core`, `osproxy-spi`, `osproxy-tenancy`, `osproxy-rewrite`) from crates.io,
+pinned to `=1.0.1`, so a `cargo build` resolves everything with no other repository
+to check out.
 
-| | osproxy (reused engine) | envoy-osproxy (this repo) |
-|---|---|---|
-| tenancy, placement, reshaping, `_bulk`/`_mget`/`_msearch`, migration | ✅ owns it | reuses as-is |
-| the wire: HTTP, TLS/mTLS, pooling, LB, retries | osproxy's own server | **Envoy** (we ship none) |
-| how the brain is invoked | osproxy's pipeline | Envoy **ext_proc** or **dynamic module** |
+osproxy owns the multi-tenant OpenSearch logic. Envoy owns the wire: HTTP, TLS and
+mTLS, pooling, load balancing, and retries. The `evoxy-*` crates are the thin layer
+between them, building the same request context osproxy builds and driving the same
+engine behind Envoy's extension points.
 
-The `evoxy-*` crates are the thin Envoy-facing layer that builds the same
-`RequestCtx` and drives the same engine behind Envoy's seams.
+## Two backends, one brain
 
-## Not turnkey — how to run it
+The same logic runs behind either Envoy extension point. Pick the dynamic module
+when latency is the priority; pick ext_proc when process isolation and an
+independent deploy are worth a couple of milliseconds.
 
-This is a **toolkit, not a ready-to-run proxy.** To put it in front of OpenSearch
-you (1) implement the tenancy SPI *or* use the built-in reference tenancy, (2) build
-an artifact — an ext_proc server or a dynamic-module `.so`, and (3) write the Envoy
-bootstrap. See **[examples/](examples)** for compiling SPI code and Envoy configs
-for both backends.
+| backend | mechanism | measured added latency | trade-off |
+|---|---|---|---|
+| ext_proc | out-of-process gRPC sidecar | +2.3 ms over Envoy | process isolation, independent deploy |
+| dynamic module | in-process Rust `.so` | about 0 ms over Envoy (within the noise) | lowest latency, shared crash domain |
 
-### Layout
+Both are verified end to end through a stock, unmodified Envoy. Operators run an
+unmodified Envoy release; our logic ships as bootstrap config plus a loadable
+artifact. We never patch Envoy source.
+
+## This is a toolkit, not a ready-to-run proxy
+
+There is no binary to run directly. To put envoy-osproxy in front of OpenSearch you
+implement a tenancy (or use the built-in reference tenancy), build an artifact (an
+ext_proc server or a dynamic-module `.so`), and write the Envoy bootstrap. The
+[examples](examples) directory has compiling tenancy code and Envoy configs for
+both backends, and the [user guide](https://huyz0.github.io/envoy-osproxy/) walks
+through all three steps.
+
+## Layout
 
 | Path | What |
 |------|------|
-| [crates/evoxy-abi](crates/evoxy-abi) | Envoy-facing wire model (`FilterRequest`/`FilterResponse`/`MtlsIdentity`) |
-| [crates/evoxy-adapter](crates/evoxy-adapter) | The seam: `FilterRequest` → `RequestCtx` |
-| [crates/evoxy-route](crates/evoxy-route) | Transform-then-forward routing (ADR-002) |
+| [crates/evoxy-abi](crates/evoxy-abi) | The Envoy-facing wire model |
+| [crates/evoxy-adapter](crates/evoxy-adapter) | The seam: Envoy request to engine request |
+| [crates/evoxy-route](crates/evoxy-route) | Transform-then-forward routing |
 | [crates/evoxy-filter](crates/evoxy-filter) | The SDK-agnostic filter brain |
 | [crates/evoxy-extproc](crates/evoxy-extproc) | The ext_proc gRPC backend |
 | [crates/evoxy-module](crates/evoxy-module) | The dynamic-module cdylib (workspace-excluded) |
-| [crates/evoxy-bridge](crates/evoxy-bridge) | The async fan-out HTTP→Kafka bridge |
-| [crates/evoxy-bench](crates/evoxy-bench) | Pure NFR-P bench substrate (dev-only) |
-| [examples/](examples) | A compiling custom `TenancySpi` + Envoy configs for both backends |
-| [xtask](xtask) | The gate (`cargo xtask ci`) and image builder |
-| [docs/](docs) | Spec-driven docs and ADRs |
+| [crates/evoxy-bridge](crates/evoxy-bridge) | The async fan-out sink |
+| [crates/evoxy-bench](crates/evoxy-bench) | Benchmark math (dev-only) |
+| [examples/](examples) | A compiling custom tenancy and Envoy configs for both backends |
+| [xtask](xtask) | The gate (`cargo xtask ci`) and the image builder |
+| [docs/](docs) | Design notes and decision records |
 
 ## Develop
 
 ```sh
-scripts/setup-hooks.sh   # once: install the commit + pre-commit gate
+scripts/setup-hooks.sh   # once: install the commit and pre-commit gate
 cargo xtask ci           # fmt, clippy, arch, test, doc, budgets
-cargo xtask bench        # iai-callgrind microbenchmarks (needs valgrind)
+cargo xtask bench        # instruction-count microbenchmarks (needs valgrind)
 cargo xtask module-image # build the dynamic module into a stock Envoy image (Docker)
 ```
 
-The Docker-gated live tests (real Envoy + OpenSearch) are `#[ignore]`'d; run them
-with `cargo test -p evoxy-extproc -- --ignored`.
-
-## Non-negotiable: no Envoy rebuild
-
-Operators run an unmodified Envoy release. Our logic ships as bootstrap config
-plus a loadable artifact (an `ext_proc` service container, or a `dynamic_modules`
-`.so`). We never patch Envoy source.
-
-## Documentation
-
-The user guide — introduction, architecture (with diagrams), usage, and the
-backend comparison — is published at **https://huyz0.github.io/envoy-osproxy/**
-(source in [docs/guide/](docs/guide)). Internal design notes and decision records
-live under [docs/](docs).
+The Docker-gated live tests (real Envoy and OpenSearch) are ignored by default. Run
+them with `cargo test -p evoxy-extproc -- --ignored`.
 
 ## License
 

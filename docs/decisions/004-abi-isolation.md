@@ -12,7 +12,7 @@ specific Envoy build.
 Our workspace is currently pure Rust: `cargo xtask ci` runs anywhere with just
 the pinned toolchain. Depending on the SDK directly would force `libclang` + the
 Envoy headers onto every gate run and every contributor, and pin the whole
-workspace to an Envoy ABI version — a heavy, brittle imposition for a dependency
+workspace to an Envoy ABI version, a heavy, brittle imposition for a dependency
 only the final cdylib needs.
 
 osproxy hit the same shape with `librdkafka` and solved it by making
@@ -23,15 +23,15 @@ in the gate). We mirror that.
 
 Split the dynamic module into two crates:
 
-- **`evoxy-filter`** — *gated, pure Rust.* The filter brain: it takes an
+- **`evoxy-filter`**, *gated, pure Rust.* The filter brain: it takes an
   [`evoxy_abi::FilterRequest`], runs the adapter → `evoxy-route` pipeline, and
-  drives an **`EnvoyActions`** trait — our own SDK-agnostic abstraction of the
+  drives an **`EnvoyActions`** trait, our own SDK-agnostic abstraction of the
   Envoy filter effects we need (set upstream cluster, rewrite method/path/body,
   mutate headers, send a local reply). It also ships the reference tenancy for
   the default artifact. Fully unit-testable against a fake `EnvoyActions`; no SDK
   dependency, so it stays in the workspace and the gate.
 
-- **`evoxy-module`** — *workspace-excluded.* The thin cdylib that depends on the
+- **`evoxy-module`**, *workspace-excluded.* The thin cdylib that depends on the
   Envoy SDK, implements the SDK's real HTTP-filter trait by adapting each callback
   to `EnvoyActions`, drives the async `evoxy-route` resolve on a captured runtime
   handle, and exposes the `register!` entry (ADR-003) that monomorphizes the brain

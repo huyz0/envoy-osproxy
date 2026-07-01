@@ -1,7 +1,7 @@
-# 12 — ext_proc vs. dynamic module: the benchmark-grounded comparison
+# 12, ext_proc vs. dynamic module: the benchmark-grounded comparison
 
 Both backends (`evoxy-extproc`, the excluded `evoxy-module`) run the **same
-brain** — `evoxy-filter::Filter::handle` (adapter → `evoxy-route::prepare` →
+brain**, `evoxy-filter::Filter::handle` (adapter → `evoxy-route::prepare` →
 issue effects through `EnvoyActions`). They differ in exactly one axis:
 **transport**. This doc grounds the choice in the two benchmark tiers.
 
@@ -27,46 +27,46 @@ Supporting per-stage numbers (`evoxy-route/benches/route.rs`, shared-index):
 | `shape_search` (per-hit reshape) | ≈ 16,800 |
 
 Order of magnitude: a request's brain compute is ~10⁴ instructions ≈ **single-digit
-microseconds**. This cost is **identical for both backends** — it is the reused
+microseconds**. This cost is **identical for both backends**, it is the reused
 osproxy engine, not the transport.
 
 ## The difference is transport, and it is measured
 
 - **ext_proc** marshals the request to gRPC (`ProcessingRequest`) and back
   (`ProcessingResponse` with header/body mutations) and pays an **out-of-process
-  hop** — two gRPC round-trips (request + response phases, both buffered). The
+  hop**, two gRPC round-trips (request + response phases, both buffered). The
   end-to-end macrobenchmark (`evoxy-extproc/tests/perf.rs`) times the *same*
   GET-by-id **three ways** to attribute the overhead rather than lump it:
 
   | leg | p50 (dev box) | attributed to |
   |---|---:|---|
-  | baseline (direct to OpenSearch) | ≈ 1.4 ms | — |
+  | baseline (direct to OpenSearch) | ≈ 1.4 ms | n/a |
   | envoy-only (Envoy, **no** ext_proc filter) | ≈ 2.2 ms | **Envoy's own proxying: ≈ +0.8 ms** |
   | proxy (Envoy + ext_proc filter) | ≈ 4.5 ms | **our ext_proc filter: ≈ +2.3 ms over Envoy** |
 
   So of the ~3 ms total added latency, ~0.8 ms is Envoy simply being a proxy and
-  ~2.3 ms is our filter's out-of-process hop — and the brain compute (~µs) is
+  ~2.3 ms is our filter's out-of-process hop, and the brain compute (~µs) is
   negligible in both. The hop, not the brain and not Envoy, dominates ext_proc's
   cost.
 - **dynamic module** runs the brain **in-process** on the Envoy worker and applies
-  the effects directly (`set_request_header`, drain+append the body buffer) — **no
+  the effects directly (`set_request_header`, drain+append the body buffer), **no
   gRPC, no hop**. This is now **measured live, not estimated**: `evoxy-module` is
   built against the OFFICIAL upstream SDK, baked into a **stock, unmodified
-  `envoyproxy/envoy:v1.37.0`** (no fork, no rebuild — the `.so` is dlopen'd via
+  `envoyproxy/envoy:v1.37.0`** (no fork, no rebuild, the `.so` is dlopen'd via
   `ENVOY_DYNAMIC_MODULES_SEARCH_PATH`), and driven through the *same* 3-leg harness
   (`evoxy-extproc/tests/perf_module.rs`):
 
   | leg | p50 (dev box) | attributed to |
   |---|---:|---|
-  | baseline (direct to OpenSearch) | ≈ 1.31 ms | — |
+  | baseline (direct to OpenSearch) | ≈ 1.31 ms | n/a |
   | envoy-only (Envoy, **no** filter) | ≈ 1.82 ms | **Envoy's own proxying: ≈ +0.51 ms** |
   | module (Envoy + in-process module) | ≈ 1.58 ms | **our module: ≈ +0 ms over Envoy** |
 
-  The module leg (1.58 ms) lands **between** the baseline and the bare-Envoy leg —
+  The module leg (1.58 ms) lands **between** the baseline and the bare-Envoy leg
   i.e. the module's own cost is *below Envoy's own run-to-run proxying jitter*
   (~0.3–0.5 ms), so it adds **no measurable milliseconds** over Envoy (throughput
   ≈ 603 rps). That is exactly what the ~13,900-instruction brain + a few in-process
-  SDK calls predicts — now confirmed on real Envoy, versus ext_proc's measured
+  SDK calls predicts, now confirmed on real Envoy, versus ext_proc's measured
   **+2.3 ms** hop.
 
 ## The verdict
@@ -85,15 +85,15 @@ Both legs below are **live-measured** (ext_proc via `perf.rs`, module via
 The backend choice is **latency vs. isolation**, quantified:
 
 - pick the **dynamic module** when the ~3 ms ext_proc hop matters (latency-sensitive
-  paths) — you trade it for a shared crash blast radius (a filter panic takes the
+  paths), you trade it for a shared crash blast radius (a filter panic takes the
   Envoy worker down, so the deny-`unwrap`/`panic` posture is mandatory) and a
   coupled deploy/scale lifecycle;
 - pick **ext_proc** when process isolation and an independent deploy matter more
-  than ~3 ms — the brain runs out-of-process, a crash is contained, and it needs no
+  than ~3 ms, the brain runs out-of-process, a crash is contained, and it needs no
   libclang/Envoy-header build.
 
 Because both link the *same* `evoxy-filter` brain (ADR-001, ADR-004), this is a
-deployment knob, not a rewrite — and the numbers above are why one would turn it.
+deployment knob, not a rewrite, and the numbers above are why one would turn it.
 
 ## Coverage across the axes
 
@@ -103,16 +103,16 @@ the signal is clean:
 - **Concurrency** (e2e, `evoxy-extproc/tests/scale.rs`): the write-through-ext_proc
   path swept at c = 1, 8, 32 → an `evoxy_bench::ScalabilityCurve`. Measured
   (dev box): throughput **scales ≈ 18.6×** (57 → 1057 rps) while p50 stays roughly
-  flat (17 → 23 ms) and tail amplification is **≈ 1.77×** — the filter scales by
+  flat (17 → 23 ms) and tail amplification is **≈ 1.77×**, the filter scales by
   Envoy's pool reuse, it does not collapse. (This is an e2e axis; the ~2 ms filter
-  cost is *not* isolated here because OpenSearch's ~20 ms write latency swamps it —
-  rewrite cost is a microbench axis instead.)
+  cost is *not* isolated here because OpenSearch's ~20 ms write latency swamps it,
+  so rewrite cost is a microbench axis instead.)
 - **Rewrite vs. no-rewrite** (micro, `evoxy-route/benches/route.rs`): a dedicated
   write (index remap only, `BodyTransform::None`) is ≈ **11,000 instr**; the shared
-  write (inject `_tenant` + construct-id + id-encode) is ≈ **17,600 instr** — so the
+  write (inject `_tenant` + construct-id + id-encode) is ≈ **17,600 instr**, so the
   **rewrite itself costs ≈ 6,600 instr**, ~60 % over the no-rewrite path.
 - **Body size** (micro): the same shared write with a ~4 KiB body is ≈ **71,000
-  instr** vs ≈ 17,600 for a ~20 B body — ≈ **4×**, the field-inject byte-splice and
+  instr** vs ≈ 17,600 for a ~20 B body, ≈ **4×**, the field-inject byte-splice and
   JSON validation scaling with the body, as expected.
 
 ## Running the benchmarks

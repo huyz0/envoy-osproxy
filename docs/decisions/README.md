@@ -4,7 +4,7 @@ Each ADR is an immutable record of one decision: context, options, the decision,
 and why. Superseding means adding a new ADR that references the old one, never
 editing history. This is the permanent, greppable rationale trail.
 
-Many foundational decisions are **inherited** from the reused osproxy engine —
+Many foundational decisions are **inherited** from the reused osproxy engine
 e.g.
 single-target search, epoch-gated migration, filtered-or-reject isolation,
 shape-only observability. ADRs here record only what is *new* to the Envoy port.

@@ -72,8 +72,10 @@ export default defineConfig({
           label: "Guide",
           items: [
             { label: "Architecture", link: "/01-architecture/" },
-            { label: "Using envoy-osproxy", link: "/02-using/" },
-            { label: "ext_proc vs. dynamic module", link: "/03-backends/" },
+            { label: "Implementing a tenancy", link: "/02-tenancy/" },
+            { label: "Building the ext_proc backend", link: "/03-build-extproc/" },
+            { label: "Building the dynamic module", link: "/04-build-module/" },
+            { label: "ext_proc vs. dynamic module", link: "/05-backends/" },
           ],
         },
       ],

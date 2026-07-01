@@ -1,92 +1,73 @@
-# evoxy-module — the Envoy dynamic-module cdylib
+# evoxy-module
 
-The thin artifact that binds Envoy's dynamic-module C ABI and adapts it to
-[`evoxy-filter`](../evoxy-filter)'s SDK-agnostic `EnvoyActions` (ADR-004). Envoy
-loads the built `.so`; per request it calls the filter callbacks, which this
-crate maps to `EnvoyActions`, letting the tested brain do the work.
+The dynamic-module cdylib. It binds Envoy's dynamic-module C ABI and adapts it to
+[`evoxy-filter`](../evoxy-filter)'s SDK-agnostic `EnvoyActions`. Envoy loads the
+built `.so`, and per request it calls the filter callbacks, which this crate maps to
+`EnvoyActions` so the tested brain does the work.
 
-## Why this crate is workspace-excluded
+## Why this crate is excluded from the workspace
 
-It depends on the OFFICIAL upstream `envoy-proxy-dynamic-modules-rust-sdk` (which
-lives in the `envoyproxy/envoy` tree), which uses `bindgen` (needs `libclang`) and
-binds Envoy's ABI headers — a heavy, environment-specific build. Per ADR-004 it is
-**not** a workspace member and is **not** built by `cargo xtask ci`, exactly like
-osproxy's excluded `osproxy-kafka-rdkafka`. The brain it drives (`evoxy-filter`)
-*is* gated and fully tested without Envoy.
+It depends on the upstream `envoy-proxy-dynamic-modules-rust-sdk`, which lives in the
+`envoyproxy/envoy` tree and uses `bindgen` to bind Envoy's ABI headers. That needs
+`libclang` and is an environment-specific build, so the crate is not a workspace
+member and `cargo xtask ci` does not build it. The brain it drives, `evoxy-filter`,
+is gated and fully tested without Envoy.
 
-## SDK ⇔ Envoy version pinning
+## The SDK and Envoy versions must match
 
-Envoy verifies the ABI-header hash at load: `envoy_dynamic_module_on_program_init`
-returns the SDK's `kAbiVersion`, which must equal Envoy's own. So the SDK git tag
-in `Cargo.toml` **must equal** the Envoy image tag — a bump is a deliberate, paired
-event (SDK `tag = "v1.37.0"` ⇔ `envoyproxy/envoy:v1.37.0`).
+Envoy verifies an ABI-header hash at load: `envoy_dynamic_module_on_program_init`
+returns the SDK's `kAbiVersion`, and Envoy rejects a module whose hash does not match
+its own. So the SDK git tag in `Cargo.toml` must equal the Envoy image tag. Bumping
+one means bumping the other (`tag = "v1.37.0"` pairs with `envoyproxy/envoy:v1.37.0`).
 
-## Build prerequisites (host only)
+## Build prerequisites
 
-- `libclang` / `clang` (for `bindgen`).
-- The pinned Rust toolchain (`rust-toolchain.toml` at the repo root).
-- glibc no newer than the target Envoy image's (build in an older-or-equal distro;
-  the `docker/Dockerfile` uses Debian bookworm, glibc 2.36 < the image's 2.39).
+You need `clang` and `libclang` for `bindgen`, the pinned Rust toolchain from
+`rust-toolchain.toml`, and a glibc no newer than the target Envoy image's, because
+glibc is forward-compatible only. The provided `docker/Dockerfile` builds on Debian
+bookworm (glibc 2.36), which loads on the image's Ubuntu 24.04 (glibc 2.39).
 
 ```sh
 cd crates/evoxy-module
 cargo build --release --features sdk   # produces target/release/libevoxy_module.so
 ```
 
-Or, reproducibly, build the module **and** bake it into a stock Envoy image in one
-step:
+To build the module and bake it into a stock Envoy image in one step, run
+`cargo xtask module-image` from the repo root.
 
-```sh
-cargo xtask module-image
-```
-
-## Integration contract (what `src/lib.rs` wires)
+## How it wires together
 
 The non-SDK wiring is in [`src/lib.rs`](src/lib.rs) and is written against
-`evoxy-filter` only, so it is reviewable without the SDK:
+`evoxy-filter` only, so it is reviewable without the SDK. At init it parses Envoy's
+`filter_config` blob, builds the tenancy (the reference tenancy by default; a custom
+one is swapped in here), wraps it in a `TenancyRouter`, constructs a `Filter`, and
+captures a Tokio runtime handle. Per request it enumerates the headers, buffers the
+body, assembles a `FilterRequest`, runs `Filter::handle` on the runtime, and applies
+the recorded effects. A routed request continues so Envoy forwards it; a fail-closed
+decision emits the reply and stops.
 
-1. **Init** — parse Envoy's `filter_config` blob into `FilterConfig`, build the
-   tenancy (default: `ReferenceTenancy`; a user artifact swaps this — ADR-003),
-   wrap it in a `TenancyRouter`, and construct a `Filter`. Capture a Tokio runtime
-   `Handle`.
-2. **Per request** — enumerate request headers at the header phase, buffer the body,
-   assemble an `evoxy_abi::FilterRequest`, then `block_on` `Filter::handle`, where
-   `acts` is an `EnvoyActions` recorder.
-3. **Apply** — `ContinueUpstream` ⇒ commit the recorded header/path/body mutations
-   and continue so Envoy forwards to the upstream; `StoppedWithLocalReply` ⇒ emit
-   the fail-closed `send_response`.
+The SDK binding is in [`src/sdk.rs`](src/sdk.rs), behind the `sdk` feature.
+`declare_init_functions!` registers the module and its factory. `EvoxyConfig` and
+`EvoxyFilter` implement the SDK's `HttpFilterConfig` and `HttpFilter`: capture the
+headers at the header phase, run the brain at the body phase (or at the header phase
+for a body-less read), and apply the effects. `SdkActions` implements `EnvoyActions`
+as an owned recorder, so it stays `Send`, and commits the method, path, and header
+mutations, the body drain-and-append, and a fail-closed `send_response` to Envoy.
 
-### The SDK seam — implemented in `src/sdk.rs`
+## What is verified
 
-`src/sdk.rs` (behind `--features sdk`) is the real binding against the official SDK:
-- `declare_init_functions!(init, new_http_filter_config_fn)` registers the module;
-  `new_http_filter_config_fn` matches `filter_name` (`evoxy`) and builds the
-  reference tenancy + a runtime.
-- `EvoxyConfig`/`EvoxyFilter` implement the SDK's `HttpFilterConfig`/`HttpFilter`:
-  capture the (enumerable) headers at the header phase, run the brain
-  (`Module::on_request`) at the body phase (or at the header phase for a body-less
-  read), and apply the effects.
-- `SdkActions` implements `EnvoyActions` as an owned recorder (so it stays `Send`)
-  and commits `:method`/`:path`/header mutations, body drain+append, and a
-  fail-closed `send_response` to the Envoy handle.
+The built `.so` is loaded by a stock, unmodified `envoyproxy/envoy:v1.37.0`: the ABI
+hash matches, Envoy accepts the filter config, and it reaches its dispatch loop. Two
+live harnesses drive it against a real OpenSearch. `perf_module.rs` runs the
+three-leg latency comparison, and `e2e_module.rs` runs a correctness pass including a
+shared-index multi-tenant round-trip that exercises both the request and response
+transform. The in-process module adds no measurable milliseconds over Envoy, against
+the ext_proc backend's measured 2.3 ms hop.
 
-**Verified live (not estimated):** the built `libevoxy_module.so` is loaded by a
-**stock, unmodified `envoyproxy/envoy:v1.37.0`** (the ABI hash matches — Envoy
-accepts the `DynamicModuleFilter` config and reaches its dispatch loop with no
-rejection). Two live harnesses drive it against a real OpenSearch:
-`evoxy-extproc/tests/perf_module.rs` (the 3-leg latency A/B) and
-`evoxy-extproc/tests/e2e_module.rs` (correctness — dedicated write/read and a
-shared-index multi-tenant isolation round-trip that exercises the request *and*
-response transform). Measured: the in-process module adds **no milliseconds over
-Envoy** (its cost is below Envoy's own proxying jitter), versus the ext_proc
-backend's measured **+2.3 ms** out-of-process hop — see
-[docs/12](../../docs/12-backend-comparison.md).
-
-Unlike the earlier prototype ABI, this SDK **can** enumerate + mutate the request
-header map and both body buffers, so the module applies the *full*
-transform-then-forward: on the request — path rewrite, header inject, body splice
-(with `content-length` re-synced), fail-closed reply; on the response — reshaping a
-read into the client's logical view (strip injected fields, unmap ids). Cluster
-override is not exposed by this SDK rev; the reference tenancy static-routes to the
-one configured upstream, so `set_upstream_cluster` is recorded but not applied (the
-physical-index rewrite rides on `set_path`).
+This SDK can enumerate and mutate the request header map and both body buffers, so
+the module applies the full transform on the request (path rewrite, header inject,
+body splice with `content-length` re-synced, fail-closed reply) and reshapes the
+response back to the client's logical view. One thing it does not do yet: a
+per-request cluster override. The reference tenancy routes to one configured
+upstream, so `set_upstream_cluster` is recorded but not applied, and the
+physical-index rewrite rides on the path instead.
