@@ -19,6 +19,7 @@
 //! tenant value).
 #![deny(missing_docs)]
 
+mod bulk;
 mod read;
 mod response;
 mod transform;
@@ -83,6 +84,7 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
     if !matches!(
         kind,
         EndpointKind::IngestDoc
+            | EndpointKind::IngestBulk
             | EndpointKind::GetById
             | EndpointKind::DeleteById
             | EndpointKind::Search
@@ -98,12 +100,30 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
 
     match kind {
         EndpointKind::IngestDoc => write_forward(&resolved, ctx),
+        EndpointKind::IngestBulk => bulk_forward(&resolved, ctx),
         EndpointKind::GetById | EndpointKind::DeleteById => by_id_forward(&resolved, ctx),
         EndpointKind::Search => query_forward(&resolved, ctx, "_search"),
         EndpointKind::Count => query_forward(&resolved, ctx, "_count"),
         // Unreachable given the guard above, but fail closed rather than panic.
         _ => Forward::Immediate(immediate(501, "endpoint_not_supported_yet")),
     }
+}
+
+/// The `_bulk` path: rewrite the NDJSON in place (per-item inject/construct-id/
+/// index) and forward as one bulk request; the physical index is on each action
+/// line, so it goes to the cluster-level `/_bulk`.
+fn bulk_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
+    let body = match bulk::rewrite_bulk(resolved, ctx.body()) {
+        Ok(body) => body,
+        Err(err) => return Forward::Immediate(immediate(prepare_status(&err), prepare_code(&err))),
+    };
+    Forward::Upstream(PreparedForward {
+        cluster: resolved.decision.target.cluster.as_str().to_owned(),
+        method: "POST",
+        path: "/_bulk".to_owned(),
+        body,
+        header_ops: resolved.decision.header_ops.clone(),
+    })
 }
 
 /// Resolve just the upstream cluster for a request — the header-phase routing

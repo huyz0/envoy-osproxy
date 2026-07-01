@@ -279,4 +279,48 @@ async fn shared_index_isolates_tenants() {
         hits[0]["_source"].get("_tenant").is_none(),
         "injected field stripped from hit"
     );
+
+    // acme bulk-writes two more docs THROUGH Envoy (M3: NDJSON rewritten in place
+    // — each item injected + partition-scoped id + physical index).
+    let bulk = "{\"index\":{}}\n{\"id\":10,\"who\":\"a10\"}\n{\"index\":{}}\n{\"id\":11,\"who\":\"a11\"}\n";
+    let resp = http
+        .post(format!("{base}/orders/_bulk"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/x-ndjson")
+        .body(bulk)
+        .send()
+        .await
+        .expect("bulk through Envoy");
+    assert!(resp.status().is_success(), "bulk write: {}", resp.status());
+    http.post(format!("http://127.0.0.1:{os_port}/orders_shared/_refresh"))
+        .send()
+        .await
+        .expect("refresh");
+
+    // acme now has 3 docs (1, 10, 11), all in its logical view, still isolated.
+    let after: Value = http
+        .post(format!("{base}/orders/_search"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(r#"{"query":{"match_all":{}},"size":20}"#)
+        .send()
+        .await
+        .expect("search through Envoy")
+        .json()
+        .await
+        .expect("json");
+    let after_hits = after["hits"]["hits"].as_array().expect("hits array");
+    assert_eq!(
+        after_hits.len(),
+        3,
+        "acme sees its 3 docs after bulk: {after}"
+    );
+    let ids: Vec<&str> = after_hits
+        .iter()
+        .filter_map(|h| h["_id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"1") && ids.contains(&"10") && ids.contains(&"11"),
+        "logical bulk ids present: {ids:?}"
+    );
 }

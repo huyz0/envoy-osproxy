@@ -126,8 +126,18 @@ resolved ext_proc routing mode.
 
 ## M3 — `_bulk` / `_mget` / `_msearch`
 
-Body-mutating endpoints with Envoy's **STREAMED** body mode to preserve osproxy's
-bounded-memory NDJSON demux. This is where the ext_proc-vs-module cost of body
+**(M3a) `_bulk` request rewrite — done and proven live.** `evoxy-route::bulk`
+parses the NDJSON (`parse_bulk`) and rewrites each item in place: the action
+line's `_index` → physical index and `_id` → partition-scoped physical id, and
+each source line has the isolation fields injected (reusing `transform::apply`
+per line); forwarded as one bulk to the cluster-level `/_bulk`. A unit test
+asserts the rewritten NDJSON, and the shared-index e2e now **bulk-writes through
+Envoy** and confirms the two extra docs land isolated with logical ids. (Single
+upstream, as ADR-002; cross-cluster bulk demux would need fan-out, out of scope.)
+
+Remaining M3: **(M3b)** reshape the `_bulk` response `items[]` (physical→logical
+ids); `_mget`/`_msearch` demux; and Envoy's **STREAMED** body mode for
+bounded-memory large bodies. This is where the ext_proc-vs-module cost of body
 handling is measured (docs/00 §6).
 
 ## M4 — Envoy-owned TLS/mTLS

@@ -160,8 +160,8 @@ async fn unsupported_endpoint_is_501_without_resolving() {
         cluster: ClusterId::from("eu-1"),
         index: IndexName::from("orders-p1"),
     };
-    // `_bulk` is not handled yet (M3), so it fails closed without resolving.
-    let req = request("POST", "/orders/_bulk", Some("acme"), b"{}");
+    // `_mget` is not handled yet, so it fails closed without resolving.
+    let req = request("POST", "/orders/_mget", Some("acme"), b"{}");
     let parts = RequestParts::from_filter(&req, "r").unwrap();
 
     let (status, body) = immediate(prepare(&router(placement, None), &parts.ctx()).await);
@@ -318,6 +318,43 @@ async fn shape_search_response_shapes_each_hit() {
     assert_eq!(hit["_id"], Value::String("1001".to_owned()));
     assert!(hit["_source"].get("_tenant").is_none());
     assert_eq!(hit["_source"]["k"], Value::from(1));
+}
+
+#[tokio::test]
+async fn bulk_rewrites_each_item_for_shared_index() {
+    let body =
+        b"{\"index\":{}}\n{\"id\":1,\"who\":\"a\"}\n{\"index\":{}}\n{\"id\":2,\"who\":\"b\"}\n";
+    let req = request("POST", "/orders/_bulk", Some("acme"), body);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(prepared.method, "POST");
+    assert_eq!(prepared.path, "/_bulk");
+
+    let text = String::from_utf8(prepared.body).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 4, "two action + two source lines: {text}");
+
+    // First item: action line has the physical index + partition-scoped id; the
+    // source has the isolation field injected.
+    assert_eq!(
+        lines[0]["index"]["_index"],
+        Value::String("shared".to_owned())
+    );
+    assert_eq!(lines[0]["index"]["_id"], Value::String("acme:1".to_owned()));
+    assert_eq!(
+        lines[0]["index"]["routing"],
+        Value::String("acme".to_owned())
+    );
+    assert_eq!(lines[1]["_tenant"], Value::String("acme".to_owned()));
+    assert_eq!(lines[1]["who"], Value::String("a".to_owned()));
+    // Second item is scoped independently.
+    assert_eq!(lines[2]["index"]["_id"], Value::String("acme:2".to_owned()));
+    assert_eq!(lines[3]["_tenant"], Value::String("acme".to_owned()));
 }
 
 #[tokio::test]
