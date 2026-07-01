@@ -302,10 +302,24 @@ no-value-leak rule), and the ext_proc response-headers phase surfaces it as an
 (shared→`both`/isolation on with no value leak, dedicated→`none`/off); the
 shared-index e2e asserts the header rides a real response through stock Envoy.
 
+**(M7c) shape-only `/metrics` introspection — done and proven live.** The one
+introspection surface meant to stay on in production. Rather than a second server,
+the filter answers a **reserved path** (`/_evoxy/metrics`) with an immediate
+response — so it rides Envoy's own port, fully in-model (an `ImmediateResponse`, no
+dispatch). `Metrics` holds per-instance relaxed atomics (routed vs. fail-closed);
+`finalize` tallies each data-plane outcome; a GET to the reserved path returns a
+shape-only snapshot (`{"requests":N,"routed":N,"rejected":N}` — counts only, no
+tenant value) short-circuited before routing (and not itself counted). Two metrics
+unit tests + a `process_message` test (counts move, reserved path answered `200`);
+the shared-index e2e reads `/metrics` **through stock Envoy** and asserts the
+counters moved and total = routed + rejected. Per-instance by design — a fleet
+rollup is an external aggregator's job.
+
 Remaining M7 (deferred): reconciling our trace context with Envoy's span
-(traceparent propagation), and the richer admin plane (`/debug/explain`,
-`/metrics`, `/admin/directives`) — Envoy-adjacent, on our own port, a later
-increment now that the decision signal and the NFR-P substrate exist.
+(traceparent propagation), and the richer break-glass/directive admin surfaces
+(`/debug/explain`, `/admin/directives`) — served the same reserved-path way, a
+later increment now that the decision signal, `/metrics`, and the NFR-P substrate
+exist.
 
 ## v2 — the other backend
 

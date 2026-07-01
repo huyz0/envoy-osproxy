@@ -15,6 +15,7 @@
 
 mod actions;
 mod convert;
+mod metrics;
 mod service;
 
 /// The generated Envoy ext_proc v3 types.
@@ -32,6 +33,7 @@ use extproc::processing_response::Response as Resp;
 use extproc::{
     BodyResponse, HeadersResponse, ImmediateResponse, ProcessingRequest, ProcessingResponse,
 };
+use metrics::{Metrics, METRICS_PATH};
 use osproxy_tenancy::Router;
 
 /// Default cap on a request body the service will buffer and transform, bounding
@@ -69,14 +71,28 @@ impl Default for StreamState {
 /// (a headerless request — a read — is resolved at the headers phase).
 async fn process_message<R: Router>(
     filter: &Filter<R>,
+    metrics: &Metrics,
     state: &mut StreamState,
     request: ProcessingRequest,
 ) -> ProcessingResponse {
     match request.request {
         Some(Req::RequestHeaders(headers)) => {
             state.headers = convert::extract_headers(&headers);
+            // Reserved admin path: answer with a shape-only metrics snapshot,
+            // short-circuiting before any routing (M7). Not a data-plane request,
+            // so it is not counted.
+            if reserved_path(&state.headers) == METRICS_PATH {
+                return metrics_response(metrics);
+            }
             if headers.end_of_stream {
-                finalize(filter, state.headers.clone(), Vec::new(), Phase::Headers).await
+                finalize(
+                    filter,
+                    metrics,
+                    state.headers.clone(),
+                    Vec::new(),
+                    Phase::Headers,
+                )
+                .await
             } else {
                 // Continue; the mutation happens once we have the body. Envoy
                 // requires a `CommonResponse` (an empty response is rejected).
@@ -89,9 +105,17 @@ async fn process_message<R: Router>(
             // Bound the working set: the transform holds the whole body, so refuse
             // an over-cap body up front (fail-closed) rather than allocate for it.
             if body.body.len() > state.max_request_body_bytes {
+                metrics.record_rejected();
                 return payload_too_large();
             }
-            finalize(filter, state.headers.clone(), body.body, Phase::Body).await
+            finalize(
+                filter,
+                metrics,
+                state.headers.clone(),
+                body.body,
+                Phase::Body,
+            )
+            .await
         }
         // Response path (M2b): reshape a read's response into the client's logical
         // view. Headers just continue; the body is shaped (strip injected fields,
@@ -188,9 +212,11 @@ enum Phase {
     Body,
 }
 
-/// Run the brain and wrap its effects in the phase-appropriate response.
+/// Run the brain and wrap its effects in the phase-appropriate response, tallying
+/// the outcome (routed vs. fail-closed) for `/metrics`.
 async fn finalize<R: Router>(
     filter: &Filter<R>,
+    metrics: &Metrics,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     phase: Phase,
@@ -201,16 +227,40 @@ async fn finalize<R: Router>(
     let mut actions = ExtProcActions::default();
     let _decision = filter.handle(&req, &mut actions).await;
     match actions.finish(&orig_method, &orig_path) {
-        Ok(common) => wrap(match phase {
-            Phase::Headers => Resp::RequestHeaders(HeadersResponse {
-                response: Some(common),
-            }),
-            Phase::Body => Resp::RequestBody(BodyResponse {
-                response: Some(common),
-            }),
-        }),
-        Err(immediate) => wrap(Resp::ImmediateResponse(immediate)),
+        Ok(common) => {
+            metrics.record_routed();
+            wrap(match phase {
+                Phase::Headers => Resp::RequestHeaders(HeadersResponse {
+                    response: Some(common),
+                }),
+                Phase::Body => Resp::RequestBody(BodyResponse {
+                    response: Some(common),
+                }),
+            })
+        }
+        Err(immediate) => {
+            metrics.record_rejected();
+            wrap(Resp::ImmediateResponse(immediate))
+        }
     }
+}
+
+/// The request `:path` (query stripped), for the reserved-path check.
+fn reserved_path(headers: &[(String, String)]) -> &str {
+    headers
+        .iter()
+        .find(|(k, _)| k == ":path")
+        .map_or("", |(_, v)| v.split('?').next().unwrap_or(""))
+}
+
+/// The `/metrics` reply: a shape-only snapshot as a `200` immediate response,
+/// served by the filter itself (no second server, rides Envoy's port).
+fn metrics_response(metrics: &Metrics) -> ProcessingResponse {
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus { code: 200 }),
+        body: metrics.snapshot_json(),
+        ..Default::default()
+    }))
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.

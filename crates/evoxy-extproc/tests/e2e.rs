@@ -481,4 +481,24 @@ async fn shared_index_isolates_tenants() {
     let second_hits = responses[1]["hits"]["hits"].as_array().expect("hits");
     assert_eq!(second_hits.len(), 1, "term search matches one: {msearch}");
     assert_eq!(second_hits[0]["_id"], json!("10"), "logical id in term hit");
+
+    // M7: the shape-only /metrics introspection surface, served by the filter
+    // itself as an immediate response THROUGH Envoy (no second server). After all
+    // the traffic above, the counters are non-zero and total = routed + rejected.
+    let metrics: Value = http
+        .get(format!("{base}/_evoxy/metrics"))
+        .send()
+        .await
+        .expect("metrics through Envoy")
+        .json()
+        .await
+        .expect("metrics json");
+    let routed = metrics["routed"].as_u64().expect("routed");
+    let rejected = metrics["rejected"].as_u64().expect("rejected");
+    assert!(routed > 0, "some requests routed: {metrics}");
+    assert_eq!(
+        metrics["requests"].as_u64(),
+        Some(routed + rejected),
+        "requests = routed + rejected: {metrics}"
+    );
 }

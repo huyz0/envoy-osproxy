@@ -11,6 +11,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::extproc::{ProcessingRequest, ProcessingResponse};
+use crate::metrics::Metrics;
 use crate::{process_message, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 /// The generated tonic server wrapper, re-exported so a binary can mount the
@@ -32,6 +33,7 @@ type ServiceRouter = TenancyRouter<ReferenceTenancy>;
 #[derive(Clone)]
 pub struct ExtProcService {
     filter: Arc<Filter<ServiceRouter>>,
+    metrics: Arc<Metrics>,
     max_request_body_bytes: usize,
 }
 
@@ -48,6 +50,7 @@ impl ExtProcService {
     pub fn new(filter: Filter<ServiceRouter>) -> Self {
         Self {
             filter: Arc::new(filter),
+            metrics: Arc::new(Metrics::default()),
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
     }
@@ -71,6 +74,7 @@ impl ExternalProcessor for ExtProcService {
     ) -> Result<Response<Self::ProcessStream>, Status> {
         let mut inbound = request.into_inner();
         let filter = self.filter.clone();
+        let metrics = self.metrics.clone();
         let max_request_body_bytes = self.max_request_body_bytes;
         let (tx, rx) = mpsc::channel(16);
 
@@ -81,7 +85,7 @@ impl ExternalProcessor for ExtProcService {
             loop {
                 match inbound.message().await {
                     Ok(Some(req)) => {
-                        let resp = process_message(&filter, &mut state, req).await;
+                        let resp = process_message(&filter, &metrics, &mut state, req).await;
                         if tx.send(Ok(resp)).await.is_err() {
                             break;
                         }
