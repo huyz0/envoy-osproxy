@@ -455,6 +455,7 @@ name = "evoxy-bridge"
 version = "0.0.0"
 dependencies = [
  "osproxy-kafka",
+ "tokio",
 ]
 
 [[package]]

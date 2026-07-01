@@ -11,5 +11,8 @@ description = "The async fan-out bridge (ADR-005): turns an Envoy-mirrored reque
 [dependencies]
 osproxy-kafka.workspace = true
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
 [lints]
 workspace = true

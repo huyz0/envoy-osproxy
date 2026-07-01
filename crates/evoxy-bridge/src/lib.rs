@@ -17,7 +17,7 @@
 //! Envoy→bridge hop itself is proven live in `evoxy-extproc`'s `mirror` e2e.
 #![deny(missing_docs)]
 
-use osproxy_kafka::{ProduceError, Producer};
+use osproxy_kafka::{AckProducer, ProduceError, Producer};
 
 /// The record key/payload a mirrored request produces to Kafka.
 ///
@@ -42,7 +42,7 @@ pub struct Bridge<P> {
     topic: String,
 }
 
-impl<P: Producer> Bridge<P> {
+impl<P> Bridge<P> {
     /// A bridge that produces mirrored requests to `topic`.
     pub fn new(producer: P, topic: impl Into<String>) -> Self {
         Self {
@@ -60,8 +60,16 @@ impl<P: Producer> Bridge<P> {
         }
     }
 
+    /// The producer this bridge writes through (for introspection/tests).
+    pub fn producer(&self) -> &P {
+        &self.producer
+    }
+}
+
+impl<P: Producer> Bridge<P> {
     /// Produce one Envoy-mirrored request as a fan-out record. Fire-and-forget from
-    /// the caller's view (the [`Producer`] owns durability/retry).
+    /// the caller's view (the [`Producer`] owns durability/retry) — the default
+    /// tier, matching the mirror's fire-and-forget semantics (ADR-005).
     ///
     /// # Errors
     /// [`ProduceError`] if the record could not be enqueued.
@@ -70,10 +78,21 @@ impl<P: Producer> Bridge<P> {
         self.producer
             .produce(&self.topic, &record.key, &record.payload)
     }
+}
 
-    /// The producer this bridge writes through (for introspection/tests).
-    pub fn producer(&self) -> &P {
-        &self.producer
+impl<P: AckProducer> Bridge<P> {
+    /// Produce one mirrored request and **await the broker acknowledgement** — the
+    /// durable tier (the seam a spill buffer drains onto, since it must confirm
+    /// delivery before dropping a record). Heavier than [`forward`](Bridge::forward);
+    /// use it when fan-out loss is unacceptable and the caller can wait.
+    ///
+    /// # Errors
+    /// [`ProduceError`] if the record was not acknowledged.
+    pub async fn forward_acked(&self, path: &str, body: &[u8]) -> Result<(), ProduceError> {
+        let record = Bridge::<P>::record(path, body);
+        self.producer
+            .send_acked(&self.topic, &record.key, &record.payload)
+            .await
     }
 }
 
@@ -106,5 +125,44 @@ mod tests {
         let record = Bridge::<InMemoryProducer>::record("/o/_doc/1", b"{}");
         assert_eq!(record.key, b"/o/_doc/1");
         assert_eq!(record.payload, b"{}");
+    }
+
+    /// One acknowledged record: `(topic, key, payload)`.
+    type Acked = (String, Vec<u8>, Vec<u8>);
+
+    /// A recording [`AckProducer`] for the durable-tier test — records the record
+    /// and reports success, as a broker that acknowledged would.
+    #[derive(Default)]
+    struct RecordingAck {
+        acked: std::sync::Mutex<Vec<Acked>>,
+    }
+
+    impl AckProducer for RecordingAck {
+        async fn send_acked(
+            &self,
+            topic: &str,
+            key: &[u8],
+            payload: &[u8],
+        ) -> Result<(), ProduceError> {
+            self.acked
+                .lock()
+                .unwrap()
+                .push((topic.to_owned(), key.to_vec(), payload.to_vec()));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_acked_awaits_the_broker_ack() {
+        let bridge = Bridge::new(RecordingAck::default(), "evoxy.fanout");
+        bridge
+            .forward_acked("/orders_shared/_doc/acme%3A1", br#"{"_tenant":"acme"}"#)
+            .await
+            .unwrap();
+
+        let acked = bridge.producer().acked.lock().unwrap();
+        assert_eq!(acked.len(), 1);
+        assert_eq!(acked[0].0, "evoxy.fanout");
+        assert_eq!(acked[0].1, b"/orders_shared/_doc/acme%3A1");
     }
 }
