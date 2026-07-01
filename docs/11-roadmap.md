@@ -191,6 +191,22 @@ Principal from Envoy-validated identity (XFCC/SAN) rather than self-parsed certs
 delete any residual transport concerns. mTLS-for-mutation policy expressed in
 Envoy + adapter.
 
+**(M4a) principal from XFCC — done.** Envoy terminates mTLS and forwards the
+validated client identity in the `x-forwarded-client-cert` (XFCC) header;
+`MtlsIdentity::from_xfcc` (in `evoxy-abi`) parses it — quote-aware, reads only the
+**peer** element of the chain, takes its `Subject` DN and `URI` SANs — and the
+ext_proc `convert::filter_request` populates the request identity from it (else
+the default, not-presented). The principal the brain keys tenancy on
+(`stable_id`: first URI SAN, else Subject) is therefore Envoy-validated, never
+self-parsed. The filter trusts the header because Envoy owns it
+(`forward_client_cert_details: SANITIZE_SET`); the filter never sees a raw
+certificate. Six `xfcc` unit tests (SPIFFE URI SAN, quoted-Subject-with-commas,
+chain peer-only, subject-only fallback, empty, malformed) + two `convert` tests.
+
+Remaining M4: **(M4b)** a live mTLS e2e (client cert → Envoy TLS context →
+XFCC → principal-keyed tenancy) and the **mTLS-for-mutation** policy (a write
+without a presented identity fails closed).
+
 ## M5 — migration + async fan-out
 
 Epoch-gated write gate and async write mode, reusing `osproxy-tenancy::migration`
