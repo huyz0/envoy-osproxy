@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 [dependencies]
 evoxy-abi = { path = "../evoxy-abi" }
 evoxy-filter = { path = "../evoxy-filter" }
-osproxy-tenancy = { path = "../../../opensearch-proxy/crates/osproxy-tenancy" }
+osproxy-tenancy = "=1.0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 # The OFFICIAL upstream Envoy dynamic-modules Rust SDK — the crate lives IN the

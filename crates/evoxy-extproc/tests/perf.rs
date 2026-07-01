@@ -9,7 +9,7 @@
 //! - **proxy** — client → Envoy + our ext_proc filter → OpenSearch.
 //!
 //! Then `Envoy overhead = envoy-only − baseline` and `ext_proc overhead = proxy −
-//! envoy-only`. The baseline/proxy pair also becomes an `osproxy_bench::NfrProfile`
+//! envoy-only`. The baseline/proxy pair also becomes an `evoxy_bench::NfrProfile`
 //! judged into a `Verdict`; profile + verdict + the breakdown are printed as the
 //! substrate an operator (or an LLM) reasons over.
 //!
@@ -27,9 +27,9 @@
 
 use std::time::{Duration, Instant};
 
+use evoxy_bench::{judge, LatencySummary, NfrProfile, NfrThresholds};
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
 use evoxy_filter::{Filter, ReferenceTenancy};
-use osproxy_bench::{judge, LatencySummary, NfrProfile, NfrThresholds};
 use osproxy_tenancy::TenancyRouter;
 use serde_json::Value;
 use testcontainers::core::{ContainerPort, Host, WaitFor};

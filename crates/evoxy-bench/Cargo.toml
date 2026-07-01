@@ -1,0 +1,15 @@
+[package]
+name = "evoxy-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pure, dev-only NFR-P benchmark substrate: latency summaries, proxy-vs-baseline profiles, scalability curves, and the judge that turns them into a pass/fail verdict. No I/O, no clock — the harnesses feed it measured nanoseconds."
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

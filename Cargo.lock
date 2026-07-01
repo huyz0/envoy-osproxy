@@ -454,6 +454,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "evoxy-bench"
+version = "0.0.0"
+
+[[package]]
 name = "evoxy-bridge"
 version = "0.0.0"
 dependencies = [
@@ -467,9 +471,9 @@ version = "0.0.0"
 dependencies = [
  "envoy-types",
  "evoxy-abi",
+ "evoxy-bench",
  "evoxy-filter",
  "futures-core",
- "osproxy-bench",
  "osproxy-tenancy",
  "prost",
  "rcgen",
@@ -1239,16 +1243,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "osproxy-bench"
-version = "1.0.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "osproxy-capture"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a568277605f983bf442c12af1b8863751ccac8791359a0f9514581d1f33106b"
 dependencies = [
  "osproxy-spi",
 ]
@@ -1256,6 +1254,8 @@ dependencies = [
 [[package]]
 name = "osproxy-core"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "501ab5af46f036b8e164cf4eb1c20234ede236d7b22dafc27d444475892202e1"
 dependencies = [
  "thiserror",
 ]
@@ -1263,6 +1263,8 @@ dependencies = [
 [[package]]
 name = "osproxy-kafka"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64979056491b1209d0a83836fa3967329df27684451ebc782e5182a7bd57c2b7"
 dependencies = [
  "osproxy-capture",
  "serde",
@@ -1272,6 +1274,8 @@ dependencies = [
 [[package]]
 name = "osproxy-rewrite"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbf367387e62b20ad8d351003ee1b282d93bca94e2735fb723ca2cde4bdcca66"
 dependencies = [
  "osproxy-core",
  "serde_json",
@@ -1281,6 +1285,8 @@ dependencies = [
 [[package]]
 name = "osproxy-spi"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "429a7bdddf9dbe098de17d7b72af4cb936c1c3588dddb3cf93c7be327f6c420c"
 dependencies = [
  "osproxy-core",
  "serde_json",
@@ -1290,6 +1296,8 @@ dependencies = [
 [[package]]
 name = "osproxy-tenancy"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b88d25098cf3dc163e08bde2e67a5157930ba7cc515b514d01ec397cf22e5944"
 dependencies = [
  "osproxy-core",
  "osproxy-rewrite",

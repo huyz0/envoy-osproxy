@@ -18,7 +18,7 @@ job is only the judgment a linter cannot make.
    range or PR, review that instead.
 2. Read `AGENTS.md` (invariants), `docs/01-architecture.md`, and — for any change
    to the adapter — `docs/specs/adapter-contract.md` (the normative `ADAPT-*`
-   rules). For engine-reuse questions, consult the osproxy sister project's docs.
+   rules). For engine-reuse questions, consult the osproxy engine crates' docs on docs.rs.
 3. Read the changed files for context, not just the hunks.
 
 ## Review against the rubric

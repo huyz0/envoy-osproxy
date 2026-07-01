@@ -6,17 +6,17 @@ its topic — fix the drift.
 
 ## What this is
 
-The [osproxy](../opensearch-proxy) capability set — multi-tenant isolation, body
-reshaping, `_bulk` demux, epoch-gated migration, shape-only observability with
-runtime directives, capture — delivered as an **extension of a stock Envoy**,
-never a fork or recompile of Envoy. Envoy owns the wire (TLS, HTTP codecs,
-pooling, LB, circuit breaking); our Rust code is the brain, plugged in behind an
-Envoy extension seam.
+The osproxy capability set — multi-tenant isolation, body reshaping, `_bulk`
+demux, epoch-gated migration, shape-only observability with runtime directives,
+capture — delivered as an **extension of a stock Envoy**, never a fork or
+recompile of Envoy. Envoy owns the wire (TLS, HTTP codecs, pooling, LB, circuit
+breaking); our Rust code is the brain, plugged in behind an Envoy extension seam.
 
-The port is tractable because osproxy already split wire from brain:
-`osproxy-engine::Pipeline::handle(&RequestCtx) -> PipelineResponse` is
-transport-agnostic. We **reuse those engine crates by path** and replace only the
-transport. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
+The port is tractable because the osproxy engine already split wire from brain:
+its `Pipeline::handle(&RequestCtx) -> PipelineResponse` is transport-agnostic. We
+**reuse those engine crates from crates.io** (`osproxy-core`/`-spi`/`-tenancy`/
+`-rewrite`, pinned) and replace only the transport — no other repository is
+needed. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
 
 ## Crate map (downward-only deps, INV-1)
 
@@ -26,9 +26,9 @@ transport. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
 | `evoxy-adapter` | The one seam: `FilterRequest` → `osproxy_spi::RequestCtx`. Depends on `evoxy-abi` + reused `osproxy-core`/`-spi`. |
 | `xtask` | The gate (`cargo xtask ci`). Not shipped; opts out of workspace lints. |
 
-Reused (by path, not vendored): `osproxy-core`, `osproxy-spi`, and — per milestone
-— heavier engine crates. **Never** reuse osproxy's transport/server crates; Envoy
-replaces those.
+Reused (from crates.io, pinned `=1.0.1`, not vendored): `osproxy-core`,
+`osproxy-spi`, `osproxy-tenancy`, `osproxy-rewrite`, `osproxy-kafka`. **Never**
+reuse osproxy's transport/server crates; Envoy replaces those.
 
 ## Invariants (don't break)
 

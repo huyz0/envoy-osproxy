@@ -1,8 +1,8 @@
 //! Deterministic instruction-count microbenchmarks for the Envoy→engine seam.
 //!
 //! Instruction counts (not wall-clock) so the numbers are reproducible in CI and
-//! regressions are visible as a diff, mirroring the osproxy sister project
-//! (docs/09). Run with `cargo xtask bench` (skips cleanly without valgrind).
+//! regressions are visible as a diff (docs/09). Run with `cargo xtask bench`
+//! (skips cleanly without valgrind).
 
 use std::hint::black_box;
 

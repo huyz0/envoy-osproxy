@@ -16,7 +16,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # Deterministic instruction-count microbenchmarks, pinned exact so the installed
-# runner matches (mirrors the osproxy sister project's bench discipline, docs/09).
+# runner matches the pinned version (bench discipline, docs/09).
 iai-callgrind = "=0.16.1"
 
 [[bench]]

@@ -101,7 +101,7 @@ The hot path is exercised on the axes that move its cost, each at the tier where
 the signal is clean:
 
 - **Concurrency** (e2e, `evoxy-extproc/tests/scale.rs`): the write-through-ext_proc
-  path swept at c = 1, 8, 32 → an `osproxy_bench::ScalabilityCurve`. Measured
+  path swept at c = 1, 8, 32 → an `evoxy_bench::ScalabilityCurve`. Measured
   (dev box): throughput **scales ≈ 18.6×** (57 → 1057 rps) while p50 stays roughly
   flat (17 → 23 ms) and tail amplification is **≈ 1.77×** — the filter scales by
   Envoy's pool reuse, it does not collapse. (This is an e2e axis; the ~2 ms filter
@@ -122,8 +122,8 @@ cargo xtask bench                                        # all microbenchmarks
 cargo test -p evoxy-extproc --test perf   -- --ignored  # ext_proc NFR-P A/B + Envoy-vs-filter split (Docker)
 cargo test -p evoxy-extproc --test scale  -- --ignored  # concurrency sweep (Docker)
 
-# dynamic-module NFR-P: build the stock-Envoy-plus-.so image first (from ~/work,
-# the parent of both repos), then run the symmetric 3-leg harness:
-docker build -f envoy-osproxy/crates/evoxy-module/docker/Dockerfile -t evoxy-envoy:v1.37.0 .
+# dynamic-module NFR-P: build the stock-Envoy-plus-.so image first, then run the
+# symmetric 3-leg harness:
+cargo xtask module-image
 cargo test -p evoxy-extproc --test perf_module -- --ignored  # module NFR-P (Docker)
 ```

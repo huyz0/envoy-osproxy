@@ -17,10 +17,9 @@
 //!
 //! ## Prerequisite: the image
 //! This drives a STOCK `envoyproxy/envoy:v1.37.0` with our `.so` baked in — build
-//! it first (from `~/work`, the parent of both repos):
+//! it first (self-contained; the engine crates come from crates.io):
 //! ```text
-//! docker build -f envoy-osproxy/crates/evoxy-module/docker/Dockerfile \
-//!              -t evoxy-envoy:v1.37.0 .
+//! cargo xtask module-image
 //! ```
 //! The module is loaded via the upstream `DynamicModuleFilter` (ADR-004) — no fork,
 //! no rebuild of Envoy, exactly the "capabilities on stock Envoy" thesis.
@@ -34,7 +33,7 @@
 
 use std::time::{Duration, Instant};
 
-use osproxy_bench::{judge, LatencySummary, NfrProfile, NfrThresholds};
+use evoxy_bench::{judge, LatencySummary, NfrProfile, NfrThresholds};
 use serde_json::Value;
 use testcontainers::core::{ContainerPort, Host, WaitFor};
 use testcontainers::runners::AsyncRunner;

@@ -7,6 +7,7 @@ members = [
     "crates/evoxy-filter",
     "crates/evoxy-extproc",
     "crates/evoxy-bridge",
+    "crates/evoxy-bench",
     "xtask",
 ]
 
@@ -29,27 +30,28 @@ repository = "https://github.com/huyz0/envoy-osproxy"
 
 [workspace.dependencies]
 # The osproxy engine is REUSED, not reimplemented (docs/00 §2). We depend on its
-# I/O-free brain crates by path — `-core` (only `thiserror`) and `-spi`
-# (`-core` + `serde_json`) — so an Envoy filter can build the exact same
-# `RequestCtx` the standalone proxy builds. Heavier engine crates are pulled in
-# per milestone (M1+), never the transport/server crates (Envoy replaces those).
-osproxy-core = { path = "../opensearch-proxy/crates/osproxy-core" }
-osproxy-spi = { path = "../opensearch-proxy/crates/osproxy-spi" }
-osproxy-tenancy = { path = "../opensearch-proxy/crates/osproxy-tenancy" }
-osproxy-rewrite = { path = "../opensearch-proxy/crates/osproxy-rewrite" }
-# The pure NFR-P bench crate (LatencySummary / NfrProfile / judge) — dev-only,
-# reused for the proxy-vs-direct A/B verdict (M7, docs/00 §6).
-osproxy-bench = { path = "../opensearch-proxy/crates/osproxy-bench" }
+# I/O-free brain crates from crates.io (no local path / no sibling checkout) —
+# `-core` (only `thiserror`) and `-spi` (`-core` + `serde_json`) — so an Envoy
+# filter can build the exact same `RequestCtx` the standalone proxy builds.
+# Pinned exactly (`=`) so a build is reproducible and an engine bump is deliberate.
+osproxy-core = "=1.0.1"
+osproxy-spi = "=1.0.1"
+osproxy-tenancy = "=1.0.1"
+osproxy-rewrite = "=1.0.1"
 # The Kafka producer seam (Producer / ProduceError / InMemoryProducer) reused by
 # the fan-out bridge (ADR-005), so osproxy's real `KrafkaProducer` plugs straight
 # in. The seam crate is light (no broker client, no crypto).
-osproxy-kafka = { path = "../opensearch-proxy/crates/osproxy-kafka" }
+osproxy-kafka = "=1.0.1"
 
 # Internal crates.
 evoxy-abi = { path = "crates/evoxy-abi" }
 evoxy-adapter = { path = "crates/evoxy-adapter" }
 evoxy-route = { path = "crates/evoxy-route" }
 evoxy-filter = { path = "crates/evoxy-filter" }
+# The NFR-P bench harness (LatencySummary / NfrProfile / judge / ScalabilityCurve)
+# — dev-only, owned here (osproxy's equivalent is unpublished), so the perf/scale
+# harnesses have no unpublished or path dependency.
+evoxy-bench = { path = "crates/evoxy-bench" }
 
 # Third-party.
 thiserror = "2"

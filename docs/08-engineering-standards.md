@@ -1,7 +1,7 @@
 # 08 — Engineering Standards
 
-Inherited wholesale from the osproxy sister project; this file records only what
-is specific here. Where silent, osproxy's `docs/08` applies.
+These standards follow the same discipline as the reused osproxy engine; this
+file records what is specific to this project.
 
 ## Gates (enforced by `cargo xtask ci` + `.githooks/pre-commit`)
 

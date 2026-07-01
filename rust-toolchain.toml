@@ -1,7 +1,7 @@
 [toolchain]
 # Pinned exact so clippy's lint set is identical locally and in CI (a floating
-# "stable" drifts and breaks the gate). Matches the osproxy sister project so the
-# reused engine crates compile under the same toolchain. Bumping is deliberate.
+# "stable" drifts and breaks the gate). Also the toolchain the reused engine
+# crates are known to compile under. Bumping is deliberate.
 channel = "1.94.1"
 components = ["rustfmt", "clippy", "llvm-tools-preview"]
 profile = "default"

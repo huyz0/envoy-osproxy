@@ -3,7 +3,7 @@
 //! `#[ignore]`'d (needs Docker; run `--ignored`). The single-point `perf.rs`
 //! harness answers "what does one small read cost"; this one sweeps **concurrency**
 //! — the write-through-ext_proc path at c = 1, 8, 32 — into an
-//! `osproxy_bench::ScalabilityCurve`, so we can see whether the filter *scales*
+//! `evoxy_bench::ScalabilityCurve`, so we can see whether the filter *scales*
 //! (throughput climbs, tail stays bounded via Envoy's pool reuse) or *collapses*
 //! (the tail blows up). The **body-size** and **rewrite-vs-no-rewrite** axes are
 //! measured at the microbench level instead (`evoxy-route`'s `prepare_write` vs
@@ -23,11 +23,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
-use evoxy_filter::{Filter, FilterConfig, ReferenceTenancy};
-use osproxy_bench::{
+use evoxy_bench::{
     judge_scalability, LatencySummary, ScalabilityCurve, ScalabilityPoint, ScalabilityThresholds,
 };
+use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
+use evoxy_filter::{Filter, FilterConfig, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
 use testcontainers::core::{ContainerPort, Host, WaitFor};
 use testcontainers::runners::AsyncRunner;

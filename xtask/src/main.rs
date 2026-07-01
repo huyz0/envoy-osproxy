@@ -10,8 +10,7 @@
 //!   budgets  Source-file size budgets; overflow needs a `// JUSTIFY`.
 //!   bench    Deterministic instruction-count microbenchmarks (needs valgrind).
 //!   crypto-free  The shipped extension links no wire crypto (FIPS boundary, M6).
-//!
-//! Mirrors the osproxy sister project's gate (docs/08, docs/09).
+//!   module-image Build the dynamic module into a stock Envoy image (needs Docker).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -28,6 +27,7 @@ fn main() -> ExitCode {
         "budgets" => budgets(),
         "bench" => bench(),
         "crypto-free" => crypto_free(),
+        "module-image" => module_image(),
         other => Err(format!("unknown command: {other}\n{USAGE}")),
     };
     match result {
@@ -39,7 +39,12 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench|crypto-free>";
+const USAGE: &str =
+    "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench|crypto-free|module-image>";
+
+/// The stock-Envoy image tag we build the module into. Kept equal to the SDK tag
+/// pinned in `evoxy-module/Cargo.toml` (the ABI hash is load-checked).
+const MODULE_IMAGE: &str = "evoxy-envoy:v1.37.0";
 
 fn run_ci() -> Result<(), String> {
     fmt()?;
@@ -90,6 +95,39 @@ fn bench() -> Result<(), String> {
         return Ok(());
     }
     run("cargo", &["bench", "--workspace"])
+}
+
+/// Build the dynamic module into a stock Envoy image (ADR-004). Self-contained:
+/// the build context is the repo root and the engine crates come from crates.io,
+/// so no sibling checkout is needed. Requires Docker. The resulting image is what
+/// the `perf_module`/`e2e_module` harnesses load.
+fn module_image() -> Result<(), String> {
+    if which("docker").is_none() {
+        return Err("module-image: docker not found on PATH".into());
+    }
+    let root = workspace_root();
+    println!(
+        "+ docker build -t {MODULE_IMAGE} (context {})",
+        root.display()
+    );
+    let status = Command::new("docker")
+        .args([
+            "build",
+            "-f",
+            "crates/evoxy-module/docker/Dockerfile",
+            "-t",
+            MODULE_IMAGE,
+            ".",
+        ])
+        .current_dir(&root)
+        .status()
+        .map_err(|e| format!("failed to spawn docker: {e}"))?;
+    if status.success() {
+        println!("module-image: built {MODULE_IMAGE} \u{2713}");
+        Ok(())
+    } else {
+        Err(format!("module-image: docker build failed ({status})"))
+    }
 }
 
 /// Downward-only crate dependencies (INV-1, docs/08). `evoxy-abi` is the leaf
