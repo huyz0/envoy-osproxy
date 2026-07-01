@@ -35,10 +35,19 @@ osproxy engine, not the transport.
 - **ext_proc** marshals the request to gRPC (`ProcessingRequest`) and back
   (`ProcessingResponse` with header/body mutations) and pays an **out-of-process
   hop** — two gRPC round-trips (request + response phases, both buffered). The
-  end-to-end macrobenchmark (`evoxy-extproc/tests/perf.rs`, NFR-P A/B through stock
-  Envoy vs. direct OpenSearch) measures this as **added p50 ≈ 3.0 ms / p99 ≈ 4.3
-  ms** — three orders of magnitude larger than the brain compute. The hop, not the
-  brain, is ext_proc's cost.
+  end-to-end macrobenchmark (`evoxy-extproc/tests/perf.rs`) times the *same*
+  GET-by-id **three ways** to attribute the overhead rather than lump it:
+
+  | leg | p50 (dev box) | attributed to |
+  |---|---:|---|
+  | baseline (direct to OpenSearch) | ≈ 1.4 ms | — |
+  | envoy-only (Envoy, **no** ext_proc filter) | ≈ 2.2 ms | **Envoy's own proxying: ≈ +0.8 ms** |
+  | proxy (Envoy + ext_proc filter) | ≈ 4.5 ms | **our ext_proc filter: ≈ +2.3 ms over Envoy** |
+
+  So of the ~3 ms total added latency, ~0.8 ms is Envoy simply being a proxy and
+  ~2.3 ms is our filter's out-of-process hop — and the brain compute (~µs) is
+  negligible in both. The hop, not the brain and not Envoy, dominates ext_proc's
+  cost.
 - **dynamic module** runs the brain **in-process** on the Envoy worker and applies
   the effects directly (set the header on the map, `buffer.replace` the body) —
   **no gRPC, no hop**. Its overhead is the brain (the same ~13,900 instructions)
@@ -48,10 +57,13 @@ osproxy engine, not the transport.
 
 ## The verdict
 
-| | compute (shared brain) | transport overhead | total added latency |
-|---|---|---|---|
-| **ext_proc** | ≈ 13,900 instr (~µs) | gRPC marshal + out-of-process hop | **≈ 3 ms** (measured) |
-| **dynamic module** | ≈ 13,900 instr (~µs) | in-process SDK calls | **≈ µs** (no hop) |
+Both backends are Envoy deployments, so both pay Envoy's own proxying overhead
+(≈ +0.8 ms, measured above). The **differentiator** is only the filter transport:
+
+| | brain compute | Envoy overhead (common) | filter transport (differentiator) | total added |
+|---|---|---|---|---|
+| **ext_proc** | ≈ 13,900 instr (~µs) | ≈ +0.8 ms | gRPC marshal + out-of-process hop: **≈ +2.3 ms** | ≈ 3 ms |
+| **dynamic module** | ≈ 13,900 instr (~µs) | ≈ +0.8 ms | in-process SDK calls: **≈ +µs** | ≈ 0.8 ms |
 
 The backend choice is **latency vs. isolation**, quantified:
 

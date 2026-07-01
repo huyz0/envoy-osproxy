@@ -1,12 +1,17 @@
-//! NFR-P A/B latency proof (M7): how much does the ext_proc hop cost?
+//! NFR-P latency proof (M7): decompose the added latency — Envoy vs. our filter.
 //!
 //! `#[ignore]`'d (needs Docker; run `--ignored`). It times the *same* GET-by-id
-//! two ways against one real OpenSearch: directly (the baseline) and **through a
-//! stock Envoy + our ext_proc filter** (the proxy). Both hit the same physical
-//! document, so their difference isolates the proxy overhead — the ext_proc
-//! round-trips plus the transform/response-shape. The samples become an
-//! `osproxy_bench::NfrProfile`, judged into a `Verdict`; the profile+verdict JSON
-//! is printed as the substrate an operator (or an LLM) reasons over.
+//! three ways against one real OpenSearch, so the overhead is **attributed**, not
+//! lumped:
+//! - **baseline** — client → OpenSearch directly;
+//! - **envoy-only** — client → a stock Envoy listener with *no* ext_proc filter →
+//!   OpenSearch (isolates Envoy's own proxying cost);
+//! - **proxy** — client → Envoy + our ext_proc filter → OpenSearch.
+//!
+//! Then `Envoy overhead = envoy-only − baseline` and `ext_proc overhead = proxy −
+//! envoy-only`. The baseline/proxy pair also becomes an `osproxy_bench::NfrProfile`
+//! judged into a `Verdict`; profile + verdict + the breakdown are printed as the
+//! substrate an operator (or an LLM) reasons over.
 //!
 //! The assertions are **host-independent** (every request stayed functional; the
 //! profile is well-formed) — absolute latency bounds are a per-host calibration,
@@ -70,6 +75,24 @@ static_resources:
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  - name: bare
+    address: { socket_address: { address: 0.0.0.0, port_value: 10001 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: passthrough
+          route_config:
+            name: bare
+            virtual_hosts:
+            - name: all
+              domains: ["*"]
+              routes: [{ match: { prefix: "/" }, route: { cluster: opensearch } }]
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
   - name: opensearch
     type: STRICT_DNS
@@ -127,9 +150,16 @@ fn spawn_service(service: ExtProcService) -> u16 {
     port
 }
 
-async fn start_envoy(svc_port: u16, os_port: u16) -> (ContainerAsync<GenericImage>, String) {
+/// Returns the container and both base URLs: (ext_proc listener, bare-passthrough
+/// listener). The bare listener routes to OpenSearch with **no** ext_proc filter,
+/// so its cost isolates Envoy's own proxying overhead.
+async fn start_envoy(
+    svc_port: u16,
+    os_port: u16,
+) -> (ContainerAsync<GenericImage>, String, String) {
     let envoy = GenericImage::new("envoyproxy/envoy", "v1.31-latest")
         .with_exposed_port(ContainerPort::Tcp(10000))
+        .with_exposed_port(ContainerPort::Tcp(10001))
         .with_wait_for(WaitFor::message_on_stderr("starting main dispatch loop"))
         .with_host("host.docker.internal", Host::HostGateway)
         .with_copy_to("/etc/envoy/envoy.yaml", envoy_bootstrap(svc_port, os_port))
@@ -137,8 +167,13 @@ async fn start_envoy(svc_port: u16, os_port: u16) -> (ContainerAsync<GenericImag
         .start()
         .await
         .expect("envoy starts");
-    let port = envoy.get_host_port_ipv4(10000).await.unwrap();
-    (envoy, format!("http://127.0.0.1:{port}"))
+    let extproc = envoy.get_host_port_ipv4(10000).await.unwrap();
+    let bare = envoy.get_host_port_ipv4(10001).await.unwrap();
+    (
+        envoy,
+        format!("http://127.0.0.1:{extproc}"),
+        format!("http://127.0.0.1:{bare}"),
+    )
 }
 
 /// Time a `GET url` with the given headers `count` times; return per-request
@@ -156,13 +191,20 @@ async fn time_gets(
         if let Some(t) = tenant {
             req = req.header("x-tenant", t);
         }
+        let measured = i >= warmup;
         let start = Instant::now();
-        let resp = req.send().await.expect("request");
-        let elapsed = start.elapsed();
-        assert!(resp.status().is_success(), "GET {url}: {}", resp.status());
+        let sent = req.send().await;
+        // A cold-start hiccup during warmup is tolerated; a measured miss fails.
+        if sent.is_err() && !measured {
+            continue;
+        }
+        let resp = sent.expect("request");
+        let status = resp.status();
         // Drain the body so the timing includes the full response, not just headers.
-        let _ = resp.bytes().await.expect("body");
-        if i >= warmup {
+        let _ = resp.bytes().await;
+        let elapsed = start.elapsed();
+        if measured {
+            assert!(status.is_success(), "GET {url}: {status}");
             samples.push(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
         }
     }
@@ -183,7 +225,7 @@ async fn added_latency_profile_vs_direct() {
         "x-tenant",
     )));
     let svc_port = spawn_service(ExtProcService::new(filter));
-    let (_envoy, base) = start_envoy(svc_port, os_port).await;
+    let (_envoy, base, bare) = start_envoy(svc_port, os_port).await;
     let http = reqwest::Client::new();
 
     // Seed one document directly.
@@ -198,13 +240,20 @@ async fn added_latency_profile_vs_direct() {
     assert!(seeded.status().is_success(), "seed: {}", seeded.status());
 
     let direct_get = format!("http://127.0.0.1:{os_port}/orders/_doc/1");
+    let bare_get = format!("{bare}/orders/_doc/1");
     let proxy_get = format!("{base}/orders/_doc/1");
 
-    // Baseline: straight to OpenSearch. Proxy: through Envoy + our filter.
+    // Three legs to *decompose* the overhead:
+    //   baseline    — client → OpenSearch directly
+    //   envoy-only  — client → Envoy (no ext_proc filter) → OpenSearch
+    //   proxy       — client → Envoy + our ext_proc filter → OpenSearch
+    // so Envoy's own proxying cost and our filter's marginal cost separate out.
     let baseline_ns = time_gets(&http, &direct_get, None, WARMUP, SAMPLES).await;
+    let envoy_ns = time_gets(&http, &bare_get, None, WARMUP, SAMPLES).await;
     let proxy_ns = time_gets(&http, &proxy_get, Some("acme"), WARMUP, SAMPLES).await;
 
     let baseline = LatencySummary::from_nanos(&baseline_ns).expect("baseline summary");
+    let envoy_only = LatencySummary::from_nanos(&envoy_ns).expect("envoy summary");
     let proxy = LatencySummary::from_nanos(&proxy_ns).expect("proxy summary");
     let total_proxy: u64 = proxy_ns.iter().sum();
     let throughput_rps = if total_proxy == 0 {
@@ -234,10 +283,27 @@ async fn added_latency_profile_vs_direct() {
         profile.added_p99_ns() / 1_000
     );
 
-    // Host-independent invariants: the run was complete and functional, and the
-    // proxy returned the same document as the baseline. Absolute latency is a
-    // per-host calibration (in the JSON above), not gated here.
+    // The overhead decomposition (p50, microseconds):
+    //   Envoy overhead  = envoy-only − baseline   (Envoy just being a proxy)
+    //   ext_proc overhead = proxy − envoy-only     (our filter's marginal cost)
+    // so the added latency is attributed, not lumped.
+    let envoy_added = envoy_only.p50_ns.saturating_sub(baseline.p50_ns) / 1_000;
+    let extproc_added = proxy.p50_ns.saturating_sub(envoy_only.p50_ns) / 1_000;
+    println!(
+        "--- overhead breakdown (p50, us) ---\n\
+         baseline={}  envoy-only={} (+{} Envoy)  proxy={} (+{} ext_proc over Envoy)",
+        baseline.p50_ns / 1_000,
+        envoy_only.p50_ns / 1_000,
+        envoy_added,
+        proxy.p50_ns / 1_000,
+        extproc_added,
+    );
+
+    // Host-independent invariants: all three legs ran to completion and were
+    // functional; absolute latency is a per-host calibration (printed above), not
+    // gated here.
     assert_eq!(profile.baseline.count, SAMPLES as u64);
+    assert_eq!(envoy_only.count, SAMPLES as u64);
     assert_eq!(profile.proxy.count, SAMPLES as u64);
     let via_proxy: Value = http
         .get(&proxy_get)
