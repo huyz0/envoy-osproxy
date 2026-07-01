@@ -317,11 +317,22 @@ the shared-index e2e reads `/metrics` **through stock Envoy** and asserts the
 counters moved and total = routed + rejected. Per-instance by design — a fleet
 rollup is an external aggregator's job.
 
+**(M7d) shape-only `/explain` dry-run — done and proven live.** The break-glass
+"why would this route here", served the same reserved-path way. A GET to
+`/_evoxy/explain/<target path>` makes the filter resolve `<target path>` as
+[`prepare`] would and return a **shape-only** JSON verdict — the endpoint kind, the
+outcome (`route`/`reject`), and either the decision shape or the fail-closed
+status/code — **without forwarding**. `evoxy-route::explain` shares `prepare`'s
+supported-endpoint guard, resolution, and write-gate, so the explain can never
+disagree with the real route. Two route unit tests (route with a shape-only
+decision + no value leak; unresolved → reject 400) + a `/_evoxy/explain/...` live
+e2e assertion through stock Envoy (acme's search explained as `route`; a missing
+tenant as a `reject`).
+
 Remaining M7 (deferred): reconciling our trace context with Envoy's span
-(traceparent propagation), and the richer break-glass/directive admin surfaces
-(`/debug/explain`, `/admin/directives`) — served the same reserved-path way, a
-later increment now that the decision signal, `/metrics`, and the NFR-P substrate
-exist.
+(traceparent propagation), and the write side of the directive plane
+(`/admin/directives`) — the reserved-path read/serve mechanism now exists
+(`/metrics`, `/explain`); a directive store is the remaining piece.
 
 ## v2 — the other backend
 

@@ -565,6 +565,41 @@ async fn decision_shape_dedicated_has_isolation_off() {
 }
 
 #[tokio::test]
+async fn explain_reports_route_with_shape_only_decision() {
+    let req = request("POST", "/shared/_search", Some("acme"), b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let json: Value =
+        serde_json::from_str(&crate::explain(&shared_router(), &parts.ctx()).await).unwrap();
+    assert_eq!(json["endpoint"], Value::String("Search".to_owned()));
+    assert_eq!(json["outcome"], Value::String("route".to_owned()));
+    assert_eq!(
+        json["decision"],
+        Value::String("transform=both;migration=settled;isolation=on".to_owned())
+    );
+    // No tenant value leaks into the explain.
+    let raw = crate::explain(&shared_router(), &parts.ctx()).await;
+    assert!(!raw.contains("acme") && !raw.contains("shared"));
+}
+
+#[tokio::test]
+async fn explain_reports_reject_for_unresolved_partition() {
+    // No tenant header → the explain honestly reports the fail-closed reject.
+    let req = request("PUT", "/orders/_doc/1", None, b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let json: Value =
+        serde_json::from_str(&crate::explain(&router(dedicated_index(), None), &parts.ctx()).await)
+            .unwrap();
+    assert_eq!(json["outcome"], Value::String("reject".to_owned()));
+    assert_eq!(json["status"], Value::from(400));
+    assert_eq!(
+        json["code"],
+        Value::String("partition_unresolved".to_owned())
+    );
+}
+
+#[tokio::test]
 async fn write_during_cutover_is_rejected_409() {
     // The write gate is closed (cutover): a write fails closed with a retryable 409.
     let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);

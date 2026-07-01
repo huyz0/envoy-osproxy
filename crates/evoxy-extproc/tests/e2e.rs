@@ -501,4 +501,41 @@ async fn shared_index_isolates_tenants() {
         Some(routed + rejected),
         "requests = routed + rejected: {metrics}"
     );
+
+    // M7: the shape-only /explain dry-run, also served by the filter THROUGH Envoy.
+    // Explain how acme's search would route — a shape-only decision, no forward.
+    let explain: Value = http
+        .get(format!("{base}/_evoxy/explain/orders/_search"))
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("explain through Envoy")
+        .json()
+        .await
+        .expect("explain json");
+    assert_eq!(explain["outcome"], json!("route"), "explain: {explain}");
+    assert_eq!(
+        explain["decision"],
+        json!("transform=both;migration=settled;isolation=on"),
+        "explain decision: {explain}"
+    );
+    // A missing tenant is explained as a fail-closed reject, not forwarded.
+    let reject: Value = http
+        .get(format!("{base}/_evoxy/explain/orders/_search"))
+        .send()
+        .await
+        .expect("explain reject through Envoy")
+        .json()
+        .await
+        .expect("explain json");
+    assert_eq!(
+        reject["outcome"],
+        json!("reject"),
+        "explain reject: {reject}"
+    );
+    assert_eq!(
+        reject["status"],
+        json!(400),
+        "explain reject status: {reject}"
+    );
 }

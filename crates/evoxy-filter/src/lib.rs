@@ -187,6 +187,17 @@ impl<R: Router> Filter<R> {
         let resolved = self.router.resolve(&parts.ctx()).await.ok()?;
         Some(evoxy_route::decision_shape(&resolved))
     }
+
+    /// A **shape-only** routing explain (M7) for `req` — what the filter *would*
+    /// do (route with a decision shape, or the fail-closed status/code) without
+    /// forwarding. The break-glass "why did this route here" for an operator,
+    /// served by the backend on a reserved path.
+    pub async fn explain(&self, req: &FilterRequest) -> String {
+        match evoxy_adapter::RequestParts::from_filter(req, "") {
+            Ok(parts) => evoxy_route::explain(&self.router, &parts.ctx()).await,
+            Err(_) => r#"{"outcome":"reject","status":400,"code":"unsupported_method"}"#.to_owned(),
+        }
+    }
 }
 
 /// Apply the decision's header mutations to the forwarded request.

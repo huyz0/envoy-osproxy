@@ -117,17 +117,7 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
     // Reject unhandled endpoints before resolving (cheaper, and avoids resolving a
     // bulk body as a single doc).
     let kind = ctx.endpoint();
-    if !matches!(
-        kind,
-        EndpointKind::IngestDoc
-            | EndpointKind::IngestBulk
-            | EndpointKind::GetById
-            | EndpointKind::DeleteById
-            | EndpointKind::Search
-            | EndpointKind::Count
-            | EndpointKind::MultiGet
-            | EndpointKind::MultiSearch
-    ) {
+    if !is_supported(kind) {
         return Forward::Immediate(immediate(501, "endpoint_not_supported_yet"));
     }
 
@@ -160,6 +150,60 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
         // Unreachable given the guard above, but fail closed rather than panic.
         _ => Forward::Immediate(immediate(501, "endpoint_not_supported_yet")),
     }
+}
+
+/// Whether [`prepare`] handles this endpoint (else it fails closed `501`).
+fn is_supported(kind: EndpointKind) -> bool {
+    matches!(
+        kind,
+        EndpointKind::IngestDoc
+            | EndpointKind::IngestBulk
+            | EndpointKind::GetById
+            | EndpointKind::DeleteById
+            | EndpointKind::Search
+            | EndpointKind::Count
+            | EndpointKind::MultiGet
+            | EndpointKind::MultiSearch
+    )
+}
+
+/// A **shape-only** routing explain (M7): resolve `ctx` as [`prepare`] would and
+/// report *what* it would do — the endpoint kind, the outcome (`route`/`reject`),
+/// and either the decision shape or the fail-closed status/code — as JSON, without
+/// forwarding. Carries only kinds, flags, and status codes (no tenant value), so
+/// it is a safe break-glass "why did this route here" for an operator. Partition
+/// resolution uses the headers (not the body), so it explains a header/principal-
+/// keyed tenancy; a body-keyed one reports the unresolved reject, honestly.
+pub async fn explain<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> String {
+    let kind = ctx.endpoint();
+    if !is_supported(kind) {
+        return reject_json(kind, 501, "endpoint_not_supported_yet");
+    }
+    let resolved = match router.resolve(ctx).await {
+        Ok(resolved) => resolved,
+        Err(err) => return reject_json(kind, spi_status(&err), spi_code(&err)),
+    };
+    if kind.is_write()
+        && !router
+            .admit_write(&resolved.partition, resolved.decision.epoch)
+            .await
+    {
+        return reject_json(kind, 409, "stale_epoch");
+    }
+    format!(
+        "{{\"endpoint\":\"{}\",\"outcome\":\"route\",\"decision\":\"{}\"}}",
+        kind.as_str(),
+        decision_shape(&resolved)
+    )
+}
+
+/// A shape-only fail-closed explain line: the endpoint, the reject outcome, and
+/// the status/code `prepare` would return.
+fn reject_json(kind: EndpointKind, status: u16, code: &str) -> String {
+    format!(
+        "{{\"endpoint\":\"{}\",\"outcome\":\"reject\",\"status\":{status},\"code\":\"{code}\"}}",
+        kind.as_str()
+    )
 }
 
 /// The `_bulk` path: rewrite the NDJSON in place (per-item inject/construct-id/

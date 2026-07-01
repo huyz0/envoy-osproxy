@@ -78,11 +78,17 @@ async fn process_message<R: Router>(
     match request.request {
         Some(Req::RequestHeaders(headers)) => {
             state.headers = convert::extract_headers(&headers);
-            // Reserved admin path: answer with a shape-only metrics snapshot,
-            // short-circuiting before any routing (M7). Not a data-plane request,
-            // so it is not counted.
+            // Reserved admin paths (M7), answered by the filter itself and short-
+            // circuited before any routing — not data-plane requests, so not
+            // counted. `/_evoxy/metrics` is a shape-only counter snapshot;
+            // `/_evoxy/explain/<target>` is a shape-only routing dry-run.
             if reserved_path(&state.headers) == METRICS_PATH {
                 return metrics_response(metrics);
+            }
+            if let Some(target) = explain_target(&state.headers) {
+                let req =
+                    convert::filter_request(with_path(state.headers.clone(), &target), Vec::new());
+                return explain_response(filter.explain(&req).await);
             }
             if headers.end_of_stream {
                 finalize(
@@ -259,6 +265,39 @@ fn metrics_response(metrics: &Metrics) -> ProcessingResponse {
     wrap(Resp::ImmediateResponse(ImmediateResponse {
         status: Some(HttpStatus { code: 200 }),
         body: metrics.snapshot_json(),
+        ..Default::default()
+    }))
+}
+
+/// The reserved explain prefix: `/_evoxy/explain/<target path>` explains how
+/// `<target path>` would route.
+const EXPLAIN_PREFIX: &str = "/_evoxy/explain";
+
+/// The target path an explain request names, or `None` if this is not an explain
+/// request. `/_evoxy/explain/orders/_search` → `/orders/_search`.
+fn explain_target(headers: &[(String, String)]) -> Option<String> {
+    reserved_path(headers)
+        .strip_prefix(EXPLAIN_PREFIX)
+        .filter(|rest| rest.starts_with('/'))
+        .map(str::to_owned)
+}
+
+/// The headers with `:path` replaced by `path` (to explain a different request).
+fn with_path(mut headers: Vec<(String, String)>, path: &str) -> Vec<(String, String)> {
+    for (key, value) in &mut headers {
+        if key == ":path" {
+            path.clone_into(value);
+        }
+    }
+    headers
+}
+
+/// The `/explain` reply: the shape-only routing dry-run as a `200` immediate
+/// response.
+fn explain_response(body: String) -> ProcessingResponse {
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus { code: 200 }),
+        body: body.into_bytes(),
         ..Default::default()
     }))
 }
