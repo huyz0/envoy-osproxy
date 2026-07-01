@@ -163,8 +163,8 @@ async fn unsupported_endpoint_is_501_without_resolving() {
         cluster: ClusterId::from("eu-1"),
         index: IndexName::from("orders-p1"),
     };
-    // `_mget` is not handled yet, so it fails closed without resolving.
-    let req = request("POST", "/orders/_mget", Some("acme"), b"{}");
+    // `_delete_by_query` is not handled yet, so it fails closed without resolving.
+    let req = request("POST", "/orders/_delete_by_query", Some("acme"), b"{}");
     let parts = RequestParts::from_filter(&req, "r").unwrap();
 
     let (status, body) = immediate(prepare(&router(placement, None), &parts.ctx()).await);
@@ -358,6 +358,101 @@ async fn bulk_rewrites_each_item_for_shared_index() {
     // Second item is scoped independently.
     assert_eq!(lines[2]["index"]["_id"], Value::String("acme:2".to_owned()));
     assert_eq!(lines[3]["_tenant"], Value::String("acme".to_owned()));
+}
+
+#[tokio::test]
+async fn mget_rewrites_each_doc_for_shared_index() {
+    let body = br#"{"docs":[{"_id":"1"},{"_id":"2","routing":"ignored"}]}"#;
+    let req = request("POST", "/orders/_mget", Some("acme"), body);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(prepared.method, "POST");
+    assert_eq!(prepared.path, "/_mget");
+
+    let v: Value = serde_json::from_slice(&prepared.body).unwrap();
+    let docs = v["docs"].as_array().unwrap();
+    // Each fetch is pinned to the physical index with a partition-scoped id.
+    assert_eq!(docs[0]["_index"], Value::String("shared".to_owned()));
+    assert_eq!(docs[0]["_id"], Value::String("acme:1".to_owned()));
+    assert_eq!(docs[0]["routing"], Value::String("acme".to_owned()));
+    assert_eq!(docs[1]["_id"], Value::String("acme:2".to_owned()));
+}
+
+#[tokio::test]
+async fn msearch_pins_index_and_injects_filter() {
+    let body = "{}\n{\"query\":{\"match_all\":{}}}\n{\"index\":\"other\"}\n{\"query\":{\"term\":{\"k\":1}}}\n";
+    let req = request("POST", "/orders/_msearch", Some("acme"), body.as_bytes());
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(prepared.path, "/_msearch");
+
+    let text = String::from_utf8(prepared.body).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 4, "two header + two query lines: {text}");
+    // Both header lines are pinned to the physical index (even the one that named
+    // `other` — a client cannot escape its placement).
+    assert_eq!(lines[0]["index"], Value::String("shared".to_owned()));
+    assert_eq!(lines[2]["index"], Value::String("shared".to_owned()));
+    // Each query carries the mandatory partition filter (ADR-006).
+    for query in [&lines[1], &lines[3]] {
+        let filters = query["query"]["bool"]["filter"].as_array().expect("filter");
+        assert!(
+            filters
+                .iter()
+                .any(|f| f["term"]["_tenant"] == Value::String("acme".to_owned())),
+            "partition term missing: {query}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn shape_mget_response_unmaps_each_doc() {
+    let req = request("POST", "/shared/_mget", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    let upstream = br#"{"docs":[
+        {"_index":"shared","_id":"acme:1","found":true,"_source":{"_tenant":"acme","k":1}},
+        {"_index":"shared","_id":"acme:2","found":false}
+    ]}"#;
+    let shaped = crate::shape_mget_response(&resolved, "orders", upstream).unwrap();
+
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    let docs = v["docs"].as_array().unwrap();
+    assert_eq!(docs[0]["_index"], Value::String("orders".to_owned()));
+    assert_eq!(docs[0]["_id"], Value::String("1".to_owned()));
+    assert!(docs[0]["_source"].get("_tenant").is_none());
+    assert_eq!(docs[1]["_id"], Value::String("2".to_owned()));
+}
+
+#[tokio::test]
+async fn shape_msearch_response_shapes_each_response() {
+    let req = request("POST", "/shared/_msearch", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    let upstream = br#"{"responses":[
+        {"hits":{"hits":[{"_index":"shared","_id":"acme:1","_source":{"_tenant":"acme","k":1}}]}},
+        {"hits":{"hits":[{"_index":"shared","_id":"acme:9","_source":{"_tenant":"acme","k":9}}]}}
+    ]}"#;
+    let shaped = crate::shape_msearch_response(&resolved, "orders", upstream).unwrap();
+
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    let responses = v["responses"].as_array().unwrap();
+    let hit0 = &responses[0]["hits"]["hits"][0];
+    assert_eq!(hit0["_index"], Value::String("orders".to_owned()));
+    assert_eq!(hit0["_id"], Value::String("1".to_owned()));
+    assert!(hit0["_source"].get("_tenant").is_none());
+    assert_eq!(
+        responses[1]["hits"]["hits"][0]["_id"],
+        Value::String("9".to_owned())
+    );
 }
 
 #[tokio::test]

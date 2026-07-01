@@ -14,6 +14,10 @@
 // unwrap/expect are fine in this e2e harness; the helpers below are not `#[test]`
 // fns, so `allow-unwrap-in-tests` does not cover them.
 #![allow(clippy::pedantic, clippy::unwrap_used, clippy::expect_used)]
+// JUSTIFY: one live harness proving the full data plane (write/read/search/bulk/
+// mget/msearch + multi-tenant isolation) end-to-end through a real Envoy; the
+// shared container-setup helpers and a single narrative isolation test keep the
+// Docker cost to two container starts, so splitting would duplicate the fixtures.
 
 use std::time::Duration;
 
@@ -343,4 +347,71 @@ async fn shared_index_isolates_tenants() {
         ids.contains(&"1") && ids.contains(&"10") && ids.contains(&"11"),
         "logical bulk ids present: {ids:?}"
     );
+
+    // M3b: `_mget` demux THROUGH Envoy — acme fetches its own ids 1 and 10 by
+    // logical id; each comes back in the logical view (logical id, `_tenant`
+    // stripped). globex's identical key `1` is a *different* physical doc, so this
+    // never crosses tenants.
+    let mget: Value = http
+        .post(format!("{base}/orders/_mget"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(r#"{"ids":["1","10"]}"#)
+        .send()
+        .await
+        .expect("mget through Envoy")
+        .json()
+        .await
+        .expect("json");
+    let docs = mget["docs"].as_array().expect("docs array");
+    assert_eq!(docs.len(), 2, "two fetched docs: {mget}");
+    for (doc, want_id) in docs.iter().zip(["1", "10"]) {
+        assert!(doc["found"].as_bool().unwrap_or(false), "found: {doc}");
+        assert_eq!(doc["_index"], json!("orders"), "logical index: {doc}");
+        assert_eq!(doc["_id"], json!(want_id), "logical id: {doc}");
+        assert!(
+            doc["_source"].get("_tenant").is_none(),
+            "isolation field stripped: {doc}"
+        );
+    }
+
+    // M3b: `_msearch` demux THROUGH Envoy — two searches in one request; each is
+    // pinned to the physical index and partition-filtered, and each response's
+    // hits come back in the logical view, isolated to acme's 3 docs.
+    let msearch_body = "{}\n{\"query\":{\"match_all\":{}},\"size\":20}\n\
+                        {}\n{\"query\":{\"term\":{\"who\":\"a10\"}}}\n";
+    let msearch: Value = http
+        .post(format!("{base}/orders/_msearch"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/x-ndjson")
+        .body(msearch_body)
+        .send()
+        .await
+        .expect("msearch through Envoy")
+        .json()
+        .await
+        .expect("json");
+    let responses = msearch["responses"].as_array().expect("responses array");
+    assert_eq!(responses.len(), 2, "two search responses: {msearch}");
+    // First (match_all) sees exactly acme's 3 docs, logical ids, no leakage.
+    let first_hits = responses[0]["hits"]["hits"].as_array().expect("hits");
+    let first_ids: Vec<&str> = first_hits
+        .iter()
+        .filter_map(|h| h["_id"].as_str())
+        .collect();
+    assert_eq!(first_hits.len(), 3, "acme's 3 docs in msearch: {msearch}");
+    assert!(
+        first_ids.contains(&"1") && first_ids.contains(&"10") && first_ids.contains(&"11"),
+        "logical ids in msearch response: {first_ids:?}"
+    );
+    for hit in first_hits {
+        assert!(
+            hit["_source"].get("_tenant").is_none(),
+            "isolation field stripped in msearch hit: {hit}"
+        );
+    }
+    // Second (term who=a10) narrows to the one matching doc, id 10 logical.
+    let second_hits = responses[1]["hits"]["hits"].as_array().expect("hits");
+    assert_eq!(second_hits.len(), 1, "term search matches one: {msearch}");
+    assert_eq!(second_hits[0]["_id"], json!("10"), "logical id in term hit");
 }

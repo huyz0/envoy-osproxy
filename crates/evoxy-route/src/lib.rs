@@ -20,11 +20,15 @@
 #![deny(missing_docs)]
 
 mod bulk;
+mod demux;
 mod read;
 mod response;
 mod transform;
 
-pub use response::{shape_bulk_response, shape_get_response, shape_search_response};
+pub use response::{
+    shape_bulk_response, shape_get_response, shape_mget_response, shape_msearch_response,
+    shape_search_response,
+};
 
 use evoxy_abi::FilterResponse;
 use osproxy_core::EndpointKind;
@@ -89,6 +93,8 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
             | EndpointKind::DeleteById
             | EndpointKind::Search
             | EndpointKind::Count
+            | EndpointKind::MultiGet
+            | EndpointKind::MultiSearch
     ) {
         return Forward::Immediate(immediate(501, "endpoint_not_supported_yet"));
     }
@@ -104,6 +110,8 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
         EndpointKind::GetById | EndpointKind::DeleteById => by_id_forward(&resolved, ctx),
         EndpointKind::Search => query_forward(&resolved, ctx, "_search"),
         EndpointKind::Count => query_forward(&resolved, ctx, "_count"),
+        EndpointKind::MultiGet => demux_forward(&resolved, ctx, DemuxKind::MultiGet),
+        EndpointKind::MultiSearch => demux_forward(&resolved, ctx, DemuxKind::MultiSearch),
         // Unreachable given the guard above, but fail closed rather than panic.
         _ => Forward::Immediate(immediate(501, "endpoint_not_supported_yet")),
     }
@@ -121,6 +129,35 @@ fn bulk_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
         cluster: resolved.decision.target.cluster.as_str().to_owned(),
         method: "POST",
         path: "/_bulk".to_owned(),
+        body,
+        header_ops: resolved.decision.header_ops.clone(),
+    })
+}
+
+/// Which multi-operation read endpoint a [`demux_forward`] handles.
+#[derive(Clone, Copy)]
+enum DemuxKind {
+    MultiGet,
+    MultiSearch,
+}
+
+/// The `_mget`/`_msearch` path: rewrite every operation to the one resolved
+/// placement (physical index + partition-scoped id / partition filter) and
+/// forward as one cluster-level request. Response ids/indices are mapped back to
+/// the logical view on the way out (`shape_read_response`).
+fn demux_forward(resolved: &Resolved, ctx: &RequestCtx<'_>, kind: DemuxKind) -> Forward {
+    let (body_result, verb) = match kind {
+        DemuxKind::MultiGet => (demux::rewrite_mget(resolved, ctx.body()), "_mget"),
+        DemuxKind::MultiSearch => (demux::rewrite_msearch(resolved, ctx.body()), "_msearch"),
+    };
+    let body = match body_result {
+        Ok(body) => body,
+        Err(err) => return Forward::Immediate(immediate(prepare_status(&err), prepare_code(&err))),
+    };
+    Forward::Upstream(PreparedForward {
+        cluster: resolved.decision.target.cluster.as_str().to_owned(),
+        method: "POST",
+        path: format!("/{verb}"),
         body,
         header_ops: resolved.decision.header_ops.clone(),
     })
@@ -177,6 +214,12 @@ pub async fn shape_read_response<R: Router + ?Sized>(
         }
         EndpointKind::IngestBulk => {
             shape_bulk_response(&resolved, ctx.logical_index(), upstream_body).ok()
+        }
+        EndpointKind::MultiGet => {
+            shape_mget_response(&resolved, ctx.logical_index(), upstream_body).ok()
+        }
+        EndpointKind::MultiSearch => {
+            shape_msearch_response(&resolved, ctx.logical_index(), upstream_body).ok()
         }
         _ => None,
     }

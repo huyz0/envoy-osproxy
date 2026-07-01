@@ -61,6 +61,14 @@ Request-side only; response-side field-strip/id-unmap is M2b.
   (ADR-006); a dedicated placement (no isolation field) passes the query through.
 - **ROUTE-RD3** — an empty search body becomes `{}` before the filter is applied,
   so a bodyless search on a shared index is still isolated.
+- **ROUTE-RD4** — `_mget` (`demux::rewrite_mget`, M3c): each fetch (`parse_mget`,
+  `docs[]` or bare `ids[]`) is rewritten to `{_index: physical, _id: physical_id}`
+  (+ `routing` when the id rule sets it), forwarded as one `POST /_mget`. Cross-
+  cluster fan-out is out of scope (single upstream).
+- **ROUTE-RD5** — `_msearch` (`demux::rewrite_msearch`, M3c): every header line's
+  index is forced to the physical index (a client naming another index cannot
+  escape its placement) and every query is wrapped with the partition filter;
+  forwarded as one `POST /_msearch`.
 
 ## Response reshaping (ROUTE-RS*, M2b)
 
@@ -79,9 +87,16 @@ The read-path inverse of the write transform, applied on Envoy's response path.
   (a one-key object keyed by the verb) presents the logical `_index` and maps its
   physical `_id` back to logical (`map_physical_to_logical`, best-effort). Non-item
   siblings (`took`, `errors`) and per-item status fields pass through.
+- **ROUTE-RS5** — `_mget` (`shape_mget_response`, M3c): each entry in `docs[]` is
+  reshaped like a get-by-id (logical `_index`, physical `_id` → logical, injected
+  fields stripped from `_source`).
+- **ROUTE-RS6** — `_msearch` (`shape_msearch_response`, M3c): each entry in
+  `responses[]` is a full search response whose `hits.hits[]` are reshaped per
+  ROUTE-RS2.
 
-> Coverage: `route_tests.rs` covers ROUTE-F1..F5, ROUTE-E1/E2/E6, ROUTE-RD1/RD2,
-> ROUTE-RS1/RS2/RS4 (`SharedIndex` strip + id-unmap for get-by-id, search, and
-> bulk), and the `resolve_cluster` header-phase primitive; `tests/e2e.rs` reads
-> the written doc back through Envoy and asserts the bulk response carries logical
-> ids. RS* are wired onto Envoy's live response path (response body mode).
+> Coverage: `route_tests.rs` covers ROUTE-F1..F5, ROUTE-E1/E2/E6, ROUTE-RD1/RD2/
+> RD4/RD5, ROUTE-RS1/RS2/RS4/RS5/RS6 (`SharedIndex` strip + id-unmap for get-by-id,
+> search, bulk, mget, and msearch), and the `resolve_cluster` header-phase
+> primitive; `tests/e2e.rs` reads the written doc back through Envoy and asserts
+> the bulk/mget/msearch responses carry logical ids, isolated per tenant. RS* are
+> wired onto Envoy's live response path (response body mode).

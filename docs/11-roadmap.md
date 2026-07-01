@@ -146,9 +146,23 @@ unit test asserts the reshaped `items[]`, and the shared-index e2e now asserts t
 bulk **response** carries logical ids (`10`, `11`) and the logical index — not the
 partition-scoped physical ids.
 
-Remaining M3: `_mget`/`_msearch` demux; and Envoy's **STREAMED** body mode for
-bounded-memory large bodies. This is where the ext_proc-vs-module cost of body
-handling is measured (docs/00 §6).
+**(M3c) `_mget`/`_msearch` demux — done and proven live.** `evoxy-route::demux`
+rewrites both multi-operation reads for the single upstream (ADR-002):
+`rewrite_mget` pins every fetch to the physical index with a partition-scoped id
+(`parse_mget`, reusing `read::physical_id`); `rewrite_msearch` forces every header
+line's index to the physical index and wraps each query with the mandatory
+partition filter (`parse_msearch` + `read::filtered_query`) — a client naming
+another index in a header cannot escape its placement. Responses are mapped back
+to the logical view: `shape_mget_response` (per `docs[]` entry) and
+`shape_msearch_response` (per `responses[]` search), reusing the per-hit reshape.
+Wired into `prepare`/`shape_read_response`; the shared-index e2e now runs `_mget`
+(ids `1`,`10`) and a two-query `_msearch` **through Envoy**, asserting logical ids,
+`_tenant` stripped, and tenant isolation. (Single upstream; cross-cluster fan-out
+is out of scope.)
+
+Remaining M3: Envoy's **STREAMED** body mode for bounded-memory large bodies.
+This is where the ext_proc-vs-module cost of body handling is measured
+(docs/00 §6).
 
 ## M4 — Envoy-owned TLS/mTLS
 

@@ -77,16 +77,22 @@ pub fn shape_search_response(
     let shape = shape_of(&resolved.decision.body_transform);
     let partition = resolved.partition.as_str();
     let mut top: Value = parse(upstream_body)?;
-    if let Some(hits) = top
+    shape_hits(&mut top, &shape, logical_index, partition);
+    serialize(&top)
+}
+
+/// Reshape the `hits.hits[]` of a single search response in place (each hit into
+/// the client's logical view). A response with no hits array is left untouched.
+fn shape_hits(response: &mut Value, shape: &ResponseShape, logical_index: &str, partition: &str) {
+    if let Some(hits) = response
         .get_mut("hits")
         .and_then(|h| h.get_mut("hits"))
         .and_then(Value::as_array_mut)
     {
         for hit in hits.iter_mut() {
-            shape_hit(hit, &shape, logical_index, partition);
+            shape_hit(hit, shape, logical_index, partition);
         }
     }
-    serialize(&top)
 }
 
 /// Reshape one search hit in place.
@@ -159,6 +165,51 @@ fn shape_bulk_result(
             }
         }
     }
+}
+
+/// Reshape an `_mget` response: each entry in `docs[]` is presented in the
+/// client's logical view (logical `_index`, physical `_id` → logical, injected
+/// fields stripped from `_source`) — the multi-get analog of `shape_get_response`.
+///
+/// # Errors
+/// [`PrepareError::Rewrite`] if the upstream body is not valid JSON.
+pub fn shape_mget_response(
+    resolved: &Resolved,
+    logical_index: &str,
+    upstream_body: &[u8],
+) -> Result<Vec<u8>, PrepareError> {
+    let shape = shape_of(&resolved.decision.body_transform);
+    let partition = resolved.partition.as_str();
+    let mut top: Value = parse(upstream_body)?;
+    if let Some(docs) = top.get_mut("docs").and_then(Value::as_array_mut) {
+        for doc in docs.iter_mut() {
+            // A fetched doc has the same shape as a search hit (`_index`/`_id`/
+            // `_source`), so the per-hit reshape applies directly.
+            shape_hit(doc, &shape, logical_index, partition);
+        }
+    }
+    serialize(&top)
+}
+
+/// Reshape an `_msearch` response: each entry in `responses[]` is a full search
+/// response whose `hits.hits[]` are reshaped into the client's logical view.
+///
+/// # Errors
+/// [`PrepareError::Rewrite`] if the upstream body is not valid JSON.
+pub fn shape_msearch_response(
+    resolved: &Resolved,
+    logical_index: &str,
+    upstream_body: &[u8],
+) -> Result<Vec<u8>, PrepareError> {
+    let shape = shape_of(&resolved.decision.body_transform);
+    let partition = resolved.partition.as_str();
+    let mut top: Value = parse(upstream_body)?;
+    if let Some(responses) = top.get_mut("responses").and_then(Value::as_array_mut) {
+        for response in responses.iter_mut() {
+            shape_hits(response, &shape, logical_index, partition);
+        }
+    }
+    serialize(&top)
 }
 
 fn parse(body: &[u8]) -> Result<Value, PrepareError> {
