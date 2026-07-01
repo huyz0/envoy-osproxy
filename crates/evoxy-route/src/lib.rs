@@ -20,7 +20,10 @@
 #![deny(missing_docs)]
 
 mod read;
+mod response;
 mod transform;
+
+pub use response::{shape_get_response, shape_search_response};
 
 use evoxy_abi::FilterResponse;
 use osproxy_core::EndpointKind;

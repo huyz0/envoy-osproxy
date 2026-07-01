@@ -105,10 +105,19 @@ callback (no such race), and a future ext_proc mode (e.g. header-only routing, o
 `request_body_mode` tuning) can use them. The live e2e keeps the proven static
 single-cluster route.
 
-Remaining M2: **(M2b) response-side reshaping** — strip injected fields from
-`_source` and map physical ids back to logical, on Envoy's response path. **(M2c
-multi-cluster e2e)** — prove cluster selection via the dynamic module's
-header-phase routing, or a resolved ext_proc routing mode.
+**(M2b) response-side reshaping — logic done.** `evoxy-route::shape_get_response`
+and `shape_search_response` return a document/hit in the client's logical view:
+`_index`/`_id` presented as logical (physical→logical id via
+`map_physical_to_logical`), and injected tenancy fields stripped from `_source` —
+the read-path inverse of the write transform, reusing the engine primitives. 2
+tests (`SharedIndex` strip + id-unmap for get-by-id and search); `ROUTE-RS*` spec.
+Remaining M2b: wire these onto Envoy's live response path (enable the response
+body mode, carry the routing decision from the request phase to the response
+phase), and prove it with a `SharedIndex` tenancy e2e.
+
+**(M2c multi-cluster e2e)** — prove cluster selection via the dynamic module's
+header-phase routing (uses the `resolve_cluster`/`route_headers` primitives), or a
+resolved ext_proc routing mode.
 
 ## M3 — `_bulk` / `_mget` / `_msearch`
 

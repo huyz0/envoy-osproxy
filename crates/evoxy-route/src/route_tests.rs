@@ -275,6 +275,51 @@ async fn count_routes_to_physical_index() {
     assert_eq!(prepared.path, "/orders-p1/_count");
 }
 
+fn shared_router() -> TenancyRouter<StubTenancy> {
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    router(shared("eu-1", "shared", inject), Some(id_rule))
+}
+
+#[tokio::test]
+async fn shape_get_response_strips_injected_field_and_unmaps() {
+    let req = request("GET", "/shared/_doc/1001", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    let upstream = br#"{"_index":"shared","_id":"acme:1001","found":true,
+                       "_source":{"_tenant":"acme","k":1}}"#;
+    let shaped = crate::shape_get_response(&resolved, "shared", "1001", upstream).unwrap();
+
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    assert_eq!(v["_index"], Value::String("shared".to_owned()));
+    assert_eq!(v["_id"], Value::String("1001".to_owned())); // logical id restored
+    assert!(v["_source"].get("_tenant").is_none()); // isolation field stripped
+    assert_eq!(v["_source"]["k"], Value::from(1));
+}
+
+#[tokio::test]
+async fn shape_search_response_shapes_each_hit() {
+    let req = request("POST", "/shared/_search", Some("acme"), b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    let upstream = br#"{"took":1,"hits":{"total":{"value":1},"hits":[
+        {"_index":"shared","_id":"acme:1001","_source":{"_tenant":"acme","k":1}}
+    ]}}"#;
+    let shaped = crate::shape_search_response(&resolved, "shared", upstream).unwrap();
+
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    let hit = &v["hits"]["hits"][0];
+    assert_eq!(hit["_index"], Value::String("shared".to_owned()));
+    assert_eq!(hit["_id"], Value::String("1001".to_owned()));
+    assert!(hit["_source"].get("_tenant").is_none());
+    assert_eq!(hit["_source"]["k"], Value::from(1));
+}
+
 #[tokio::test]
 async fn resolve_cluster_returns_target_cluster() {
     let req = request("PUT", "/orders/_doc/42", Some("acme"), b"{}");
