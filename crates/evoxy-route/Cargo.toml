@@ -1,0 +1,25 @@
+[package]
+name = "evoxy-route"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Transform-then-forward: turns a RequestCtx into the mutated request Envoy forwards (ADR-002), reusing the osproxy routing SPI + rewrite primitives — never dispatches."
+
+[dependencies]
+evoxy-abi.workspace = true
+osproxy-core.workspace = true
+osproxy-spi.workspace = true
+osproxy-tenancy.workspace = true
+osproxy-rewrite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+evoxy-adapter.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

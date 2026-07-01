@@ -28,8 +28,12 @@ Verification: a testcontainer harness stands up **real OpenSearch behind a stock
 Envoy** loading our `.so`, and asserts a single document written through Envoy is
 routed/transformed and round-trips. Reuse a reference tenancy/routing impl.
 
-Sub-steps: (1a) `evoxy-route` — reuse routing SPI + `osproxy-rewrite` to produce
-the mutated request from a `RequestCtx`, with unit tests; (1b) `evoxy-filter` —
+Sub-steps: **(1a) `evoxy-route` — done.** Reuses `Router::resolve` + the
+`osproxy-rewrite` byte-splice primitives to turn a `RequestCtx` into a
+`PreparedForward` (cluster + physical path + id + mutated body) or a fail-closed
+response; never dispatches (ADR-002). 5 tests trace the `ROUTE-*` contract
+([route-contract spec](specs/route-contract.md)), covering dedicated passthrough,
+shared-index inject+construct-id, and the fail-closed paths. (1b) `evoxy-filter` —
 the dynamic-module cdylib against the Envoy Rust SDK, exposing the `register!`
 SPI-packaging API (ADR-003) + a default reference-tenancy artifact; (1c) the
 Envoy+OpenSearch testcontainer test.

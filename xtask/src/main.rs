@@ -94,12 +94,32 @@ fn bench() -> Result<(), String> {
 /// may depend on `evoxy-abi` and the reused osproxy brain crates, nothing more.
 fn arch() -> Result<(), String> {
     let root = workspace_root();
+    // evoxy-abi is the leaf: it must not depend on any other internal crate.
     let abi = read(&root.join("crates/evoxy-abi/Cargo.toml"))?;
-    if abi.contains("evoxy-adapter") {
-        return Err("arch: evoxy-abi must not depend on evoxy-adapter (INV-1)".into());
+    for forbidden in ["evoxy-adapter", "evoxy-route"] {
+        if section_before_dev(&abi).contains(forbidden) {
+            return Err(format!(
+                "arch: evoxy-abi must not depend on {forbidden} (INV-1)"
+            ));
+        }
+    }
+    // evoxy-route is a non-runtime dep of evoxy-adapter (adapter stays the pure
+    // ctx seam): the adapter must not take a runtime dep on route.
+    let adapter = read(&root.join("crates/evoxy-adapter/Cargo.toml"))?;
+    if section_before_dev(&adapter).contains("evoxy-route") {
+        return Err("arch: evoxy-adapter must not depend on evoxy-route (INV-1)".into());
     }
     println!("arch: dependency direction ok \u{2713}");
     Ok(())
+}
+
+/// The manifest text before `[dev-dependencies]`, so a dev-only edge (tests) is
+/// not counted as a runtime dependency-direction violation.
+fn section_before_dev(manifest: &str) -> &str {
+    match manifest.find("[dev-dependencies]") {
+        Some(idx) => &manifest[..idx],
+        None => manifest,
+    }
 }
 
 /// Source files over the budget must carry a `// JUSTIFY:` line (docs/08). Keeps
