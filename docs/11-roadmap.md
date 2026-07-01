@@ -203,9 +203,31 @@ self-parsed. The filter trusts the header because Envoy owns it
 certificate. Six `xfcc` unit tests (SPIFFE URI SAN, quoted-Subject-with-commas,
 chain peer-only, subject-only fallback, empty, malformed) + two `convert` tests.
 
-Remaining M4: **(M4b)** a live mTLS e2e (client cert → Envoy TLS context →
-XFCC → principal-keyed tenancy) and the **mTLS-for-mutation** policy (a write
-without a presented identity fails closed).
+**(M4b) mTLS-for-mutation policy + live mTLS proof — done.** The filter gained
+`Filter::with_require_mtls_for_mutation`: a write (`EndpointKind::is_write`) with
+no presented client identity fails closed with `403`
+`mtls_required_for_mutation`, before routing (reads are unaffected); three brain
+unit tests. The reference tenancy gained `partition_from_principal`: it resolves
+the partition from the Envoy-validated principal (`stable_id`) instead of a client
+header — so the tenant cannot be spoofed by a request header.
+
+The live proof (`tests/mtls.rs`, `#[ignore]`'d) generates a CA + server + client
+cert at runtime (`rcgen`), stands up **stock Envoy with a downstream mTLS
+listener** (`require_client_certificate`, `SANITIZE_SET`, URI/subject XFCC), and a
+client presenting the acme cert writes **with no `x-tenant` header at all**. The
+whole M4 chain runs end to end: Envoy validates the cert → sets XFCC → `convert`
+parses the identity → the mutation policy admits the write → the partition is the
+cert principal. The decisive assertion queries OpenSearch **directly** and finds
+the stored physical doc's `_tenant` is `CN=acme` (the Envoy-validated principal),
+partition-scoped id `CN=acme:1` — the identity, not a header, drove tenancy.
+
+**Finding — a doc id derived from a slash-bearing principal (a SPIFFE URI) needs
+path percent-encoding.** The proof uses the cert Subject DN (`CN=acme`, a valid
+path segment); a `spiffe://td/acme` principal would build
+`/idx/_doc/spiffe://td/acme:1`, whose slashes OpenSearch rejects (`no handler
+found`). Percent-encoding the doc-id path segment on write and by-id read is a
+small routing hardening, tracked as a follow-up (the id is unchanged in `_bulk`/
+`_mget`/`_msearch`, which carry it in JSON, not the path).
 
 ## M5 — migration + async fan-out
 

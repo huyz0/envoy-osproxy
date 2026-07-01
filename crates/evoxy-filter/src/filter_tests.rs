@@ -87,6 +87,53 @@ async fn write_is_mutated_and_continued_upstream() {
 }
 
 #[tokio::test]
+async fn write_without_mtls_is_refused_when_required() {
+    // Policy on, no presented identity: a write fails closed with 403.
+    let filter = filter().with_require_mtls_for_mutation(true);
+    let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);
+    let mut actions = FakeActions::default();
+
+    let decision = filter.handle(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::StoppedWithLocalReply);
+    let (status, body) = actions.local_reply.expect("a local reply");
+    assert_eq!(status, 403);
+    assert!(String::from_utf8_lossy(&body).contains("mtls_required_for_mutation"));
+    // The request was never routed.
+    assert!(actions.cluster.is_none());
+}
+
+#[tokio::test]
+async fn read_without_mtls_is_allowed_when_required() {
+    // The policy only gates writes: a read proceeds without an identity.
+    let filter = filter().with_require_mtls_for_mutation(true);
+    let req = request("GET", "/orders/_doc/42", Some("acme"), b"");
+    let mut actions = FakeActions::default();
+
+    let decision = filter.handle(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::ContinueUpstream);
+    assert!(actions.local_reply.is_none());
+}
+
+#[tokio::test]
+async fn write_with_mtls_identity_is_allowed_when_required() {
+    let filter = filter().with_require_mtls_for_mutation(true);
+    let mut req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);
+    req.identity = MtlsIdentity {
+        presented: true,
+        subject: "CN=svc".to_owned(),
+        uri_sans: vec!["spiffe://td/svc".to_owned()],
+    };
+    let mut actions = FakeActions::default();
+
+    let decision = filter.handle(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::ContinueUpstream);
+    assert!(actions.local_reply.is_none());
+}
+
+#[tokio::test]
 async fn unresolved_partition_sends_local_reply() {
     let req = request("PUT", "/orders/_doc/42", None, br#"{"k":1}"#);
     let mut actions = FakeActions::default();

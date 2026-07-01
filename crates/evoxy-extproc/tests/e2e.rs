@@ -227,6 +227,7 @@ async fn shared_index_isolates_tenants() {
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),
         inject_field: "_tenant".to_owned(),
+        partition_from_principal: false,
     };
     let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
     let svc_port = spawn_service(ExtProcService::new(filter));

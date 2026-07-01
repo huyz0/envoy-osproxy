@@ -58,13 +58,27 @@ pub enum FilterDecision {
 #[derive(Debug, Clone)]
 pub struct Filter<R> {
     router: R,
+    require_mtls_for_mutation: bool,
 }
 
 impl<R: Router> Filter<R> {
     /// Construct a filter over a resolved router (a `TenancyRouter` wrapping the
     /// user's `TenancySpi`).
     pub fn new(router: R) -> Self {
-        Self { router }
+        Self {
+            router,
+            require_mtls_for_mutation: false,
+        }
+    }
+
+    /// Require an Envoy-validated mTLS identity for write endpoints (M4): a
+    /// mutation (`EndpointKind::is_write`) with no presented client certificate is
+    /// refused with a fail-closed `403`. Reads are unaffected. The identity comes
+    /// from Envoy's XFCC header (see [`evoxy_abi::MtlsIdentity::from_xfcc`]).
+    #[must_use]
+    pub fn with_require_mtls_for_mutation(mut self, require: bool) -> Self {
+        self.require_mtls_for_mutation = require;
+        self
     }
 
     /// Handle one request: adapt → resolve+transform → issue effects. Returns
@@ -87,6 +101,17 @@ impl<R: Router> Filter<R> {
                 return FilterDecision::StoppedWithLocalReply;
             }
         };
+
+        // mTLS-for-mutation policy (M4): refuse a write without an Envoy-validated
+        // client identity, before routing. Reads are unaffected.
+        if self.require_mtls_for_mutation
+            && parts.ctx().endpoint().is_write()
+            && !req.identity.presented
+        {
+            let body = br#"{"error":"mtls_required_for_mutation"}"#.to_vec();
+            actions.send_local_reply(403, &json_headers(), &body);
+            return FilterDecision::StoppedWithLocalReply;
+        }
 
         match prepare(&self.router, &parts.ctx()).await {
             Forward::Upstream(forward) => {

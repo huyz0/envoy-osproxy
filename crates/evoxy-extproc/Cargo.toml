@@ -25,6 +25,9 @@ futures-core = "0.3"
 testcontainers = "0.26"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+# The mTLS live test (tests/mtls.rs) generates a CA + server + client cert at
+# runtime, so no secrets are committed.
+rcgen = "0.13"
 
 [lints]
 workspace = true

@@ -37,6 +37,10 @@ pub struct FilterConfig {
     pub shared_index: Option<String>,
     /// The injected isolation field name in shared-index mode.
     pub inject_field: String,
+    /// Resolve the partition from the Envoy-validated mTLS principal (the XFCC
+    /// identity's `stable_id`) instead of `partition_header` (M4). Authenticated
+    /// by Envoy, so a client cannot spoof it with a request header.
+    pub partition_from_principal: bool,
 }
 
 impl Default for FilterConfig {
@@ -47,6 +51,7 @@ impl Default for FilterConfig {
             partition_header: "x-tenant".to_owned(),
             shared_index: None,
             inject_field: "_tenant".to_owned(),
+            partition_from_principal: false,
         }
     }
 }
@@ -73,6 +78,10 @@ impl FilterConfig {
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned),
             inject_field: string("inject_field", default.inject_field),
+            partition_from_principal: parsed
+                .get("partition_from_principal")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default.partition_from_principal),
         }
     }
 }
@@ -88,6 +97,7 @@ pub struct ReferenceTenancy {
     partition_header: String,
     shared_index: Option<IndexName>,
     inject_field: FieldName,
+    partition_from_principal: bool,
 }
 
 impl ReferenceTenancy {
@@ -104,6 +114,7 @@ impl ReferenceTenancy {
             partition_header: header.into(),
             shared_index: None,
             inject_field: FieldName::from("_tenant"),
+            partition_from_principal: false,
         }
     }
 
@@ -117,6 +128,7 @@ impl ReferenceTenancy {
             partition_header: config.partition_header.clone(),
             shared_index: config.shared_index.as_deref().map(IndexName::from),
             inject_field: FieldName::from(config.inject_field.as_str()),
+            partition_from_principal: config.partition_from_principal,
         }
     }
 }
@@ -127,6 +139,14 @@ impl TenancySpi for ReferenceTenancy {
         ctx: &RequestCtx<'_>,
         _body: BodyDoc<'_>,
     ) -> Result<PartitionId, SpiError> {
+        // From the Envoy-validated mTLS principal (unspoofable), or the header.
+        if self.partition_from_principal {
+            let principal = ctx.principal_id().as_str();
+            if principal.is_empty() {
+                return Err(SpiError::PartitionUnresolved { tried: Vec::new() });
+            }
+            return Ok(PartitionId::from(principal));
+        }
         ctx.headers()
             .get(&self.partition_header)
             .map(PartitionId::from)
