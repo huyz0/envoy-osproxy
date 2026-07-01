@@ -75,9 +75,13 @@ The read-path inverse of the write transform, applied on Envoy's response path.
   `_source`. Non-hit siblings (`took`, `aggregations`, …) pass through.
 - **ROUTE-RS3** — a dedicated placement (no injected fields, no id rule) is a
   near-identity reshape; the client sees exactly what the cluster returned.
+- **ROUTE-RS4** — `_bulk` (`shape_bulk_response`, M3b): each entry in `items[]`
+  (a one-key object keyed by the verb) presents the logical `_index` and maps its
+  physical `_id` back to logical (`map_physical_to_logical`, best-effort). Non-item
+  siblings (`took`, `errors`) and per-item status fields pass through.
 
 > Coverage: `route_tests.rs` covers ROUTE-F1..F5, ROUTE-E1/E2/E6, ROUTE-RD1/RD2,
-> ROUTE-RS1/RS2 (`SharedIndex` strip + id-unmap for get-by-id and search), and the
-> `resolve_cluster` header-phase primitive; `tests/e2e.rs` reads the written doc
-> back through Envoy (write→read round-trip). Wiring RS* onto Envoy's live
-> response path (response body mode + cross-phase shape state) is M2b-followup.
+> ROUTE-RS1/RS2/RS4 (`SharedIndex` strip + id-unmap for get-by-id, search, and
+> bulk), and the `resolve_cluster` header-phase primitive; `tests/e2e.rs` reads
+> the written doc back through Envoy and asserts the bulk response carries logical
+> ids. RS* are wired onto Envoy's live response path (response body mode).

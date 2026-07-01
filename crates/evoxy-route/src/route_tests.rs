@@ -1,6 +1,9 @@
 //! Tests for the transform-then-forward preparation. A `TenancyRouter` wraps a
 //! stub `TenancySpi`, and requests flow through the real adapter → route path,
 //! mirroring how the filter will drive it (ADAPT-* → ADR-002).
+// JUSTIFY: one cohesive test module tracing the ROUTE-* contract across every
+// endpoint (write/read/search/count/bulk, request + response shaping); the shared
+// stub tenancy + helpers keep the cases terse, so splitting would scatter them.
 
 use evoxy_abi::{FilterRequest, HttpVersion, MtlsIdentity};
 use evoxy_adapter::RequestParts;
@@ -355,6 +358,35 @@ async fn bulk_rewrites_each_item_for_shared_index() {
     // Second item is scoped independently.
     assert_eq!(lines[2]["index"]["_id"], Value::String("acme:2".to_owned()));
     assert_eq!(lines[3]["_tenant"], Value::String("acme".to_owned()));
+}
+
+#[tokio::test]
+async fn shape_bulk_response_unmaps_ids_and_index() {
+    let req = request("POST", "/shared/_bulk", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = shared_router().resolve(&parts.ctx()).await.unwrap();
+
+    // A real `_bulk` response: each item is keyed by the verb; the physical index
+    // and partition-scoped ids must come back logical.
+    let upstream = br#"{"took":3,"errors":false,"items":[
+        {"index":{"_index":"shared","_id":"acme:1","status":201}},
+        {"delete":{"_index":"shared","_id":"acme:2","status":200}}
+    ]}"#;
+    let shaped = crate::shape_bulk_response(&resolved, "orders", upstream).unwrap();
+
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(
+        items[0]["index"]["_index"],
+        Value::String("orders".to_owned())
+    );
+    assert_eq!(items[0]["index"]["_id"], Value::String("1".to_owned()));
+    assert_eq!(items[0]["index"]["status"], Value::from(201));
+    assert_eq!(
+        items[1]["delete"]["_index"],
+        Value::String("orders".to_owned())
+    );
+    assert_eq!(items[1]["delete"]["_id"], Value::String("2".to_owned()));
 }
 
 #[tokio::test]

@@ -135,8 +135,18 @@ asserts the rewritten NDJSON, and the shared-index e2e now **bulk-writes through
 Envoy** and confirms the two extra docs land isolated with logical ids. (Single
 upstream, as ADR-002; cross-cluster bulk demux would need fan-out, out of scope.)
 
-Remaining M3: **(M3b)** reshape the `_bulk` response `items[]` (physical→logical
-ids); `_mget`/`_msearch` demux; and Envoy's **STREAMED** body mode for
+**(M3b) `_bulk` response reshaping — done and proven live.**
+`evoxy-route::response::shape_bulk_response` walks the `_bulk` response `items[]`
+(each a one-key object keyed by the verb) and returns each result in the client's
+logical view: logical `_index`, and the physical `_id` mapped back to logical via
+`map_physical_to_logical` (best-effort — an irreversible template leaves the id
+as-is). Wired into `shape_read_response` for `IngestBulk` (so the ext_proc
+response phase already drives it; `content-length` dropped so Envoy recomputes). A
+unit test asserts the reshaped `items[]`, and the shared-index e2e now asserts the
+bulk **response** carries logical ids (`10`, `11`) and the logical index — not the
+partition-scoped physical ids.
+
+Remaining M3: `_mget`/`_msearch` demux; and Envoy's **STREAMED** body mode for
 bounded-memory large bodies. This is where the ext_proc-vs-module cost of body
 handling is measured (docs/00 §6).
 

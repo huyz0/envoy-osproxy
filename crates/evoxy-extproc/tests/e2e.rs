@@ -292,6 +292,26 @@ async fn shared_index_isolates_tenants() {
         .await
         .expect("bulk through Envoy");
     assert!(resp.status().is_success(), "bulk write: {}", resp.status());
+
+    // M3b: the bulk RESPONSE is reshaped back to the client's logical view — each
+    // item reports the logical `_index` and the logical `_id` (physical→logical),
+    // never the partition-scoped physical id.
+    let bulk_body: Value = resp.json().await.expect("bulk response json");
+    let items = bulk_body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2, "two bulk items: {bulk_body}");
+    let item_ids: Vec<&str> = items
+        .iter()
+        .filter_map(|it| it["index"]["_id"].as_str())
+        .collect();
+    assert_eq!(item_ids, vec!["10", "11"], "logical ids in bulk response");
+    for it in items {
+        assert_eq!(
+            it["index"]["_index"],
+            json!("orders"),
+            "logical index in bulk item: {it}"
+        );
+    }
+
     http.post(format!("http://127.0.0.1:{os_port}/orders_shared/_refresh"))
         .send()
         .await

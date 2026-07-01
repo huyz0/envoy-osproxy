@@ -24,7 +24,7 @@ mod read;
 mod response;
 mod transform;
 
-pub use response::{shape_get_response, shape_search_response};
+pub use response::{shape_bulk_response, shape_get_response, shape_search_response};
 
 use evoxy_abi::FilterResponse;
 use osproxy_core::EndpointKind;
@@ -174,6 +174,9 @@ pub async fn shape_read_response<R: Router + ?Sized>(
         }
         EndpointKind::Search => {
             shape_search_response(&resolved, ctx.logical_index(), upstream_body).ok()
+        }
+        EndpointKind::IngestBulk => {
+            shape_bulk_response(&resolved, ctx.logical_index(), upstream_body).ok()
         }
         _ => None,
     }

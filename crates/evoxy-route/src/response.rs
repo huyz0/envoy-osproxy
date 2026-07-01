@@ -110,6 +110,57 @@ fn shape_hit(hit: &mut Value, shape: &ResponseShape, logical_index: &str, partit
     }
 }
 
+/// Reshape a `_bulk` response into the client's logical view: for each entry in
+/// `items[]`, present the logical `_index` and map the physical `_id` back to the
+/// logical id. Each item is a single-key object (`{"index":{...}}`,
+/// `{"delete":{...}}`, …); the inner result object is reshaped in place.
+///
+/// # Errors
+/// [`PrepareError::Rewrite`] if the upstream body is not valid JSON.
+pub fn shape_bulk_response(
+    resolved: &Resolved,
+    logical_index: &str,
+    upstream_body: &[u8],
+) -> Result<Vec<u8>, PrepareError> {
+    let shape = shape_of(&resolved.decision.body_transform);
+    let partition = resolved.partition.as_str();
+    let mut top: Value = parse(upstream_body)?;
+    if let Some(items) = top.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items.iter_mut() {
+            // Each item is a one-key object keyed by the verb; reshape the result.
+            if let Some(result) = item.as_object_mut().and_then(|obj| obj.values_mut().next()) {
+                shape_bulk_result(result, &shape, logical_index, partition);
+            }
+        }
+    }
+    serialize(&top)
+}
+
+/// Reshape one bulk item result in place (the object under the verb key).
+fn shape_bulk_result(
+    result: &mut Value,
+    shape: &ResponseShape,
+    logical_index: &str,
+    partition: &str,
+) {
+    let Some(obj) = result.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("_index") {
+        obj.insert("_index".to_owned(), Value::String(logical_index.to_owned()));
+    }
+    if let Some(rule) = &shape.id_rule {
+        if let Some(Value::String(physical)) = obj.get("_id") {
+            // Best-effort: an irreversible template leaves the physical id as-is.
+            if let Ok(Some(logical)) =
+                map_physical_to_logical(rule.template.as_str(), partition, physical)
+            {
+                obj.insert("_id".to_owned(), Value::String(logical));
+            }
+        }
+    }
+}
+
 fn parse(body: &[u8]) -> Result<Value, PrepareError> {
     serde_json::from_slice(body)
         .map_err(|_| PrepareError::Rewrite(osproxy_rewrite::RewriteError::InvalidJson))
