@@ -22,6 +22,8 @@ use crate::{prepare, Forward, PreparedForward};
 struct StubTenancy {
     placement: Placement,
     id_rule: Option<DocIdRule>,
+    /// Whether the write gate admits (false models a partition in cutover).
+    admit_writes: bool,
 }
 
 impl TenancySpi for StubTenancy {
@@ -47,10 +49,27 @@ impl TenancySpi for StubTenancy {
     async fn placement_for(&self, _partition: &PartitionId) -> Result<PlacementAt, SpiError> {
         Ok(PlacementAt::new(self.placement.clone(), Epoch::new(1)).with_endpoint("http://os:9200"))
     }
+
+    async fn admit_write(&self, _partition: &PartitionId, _epoch: Epoch) -> bool {
+        self.admit_writes
+    }
 }
 
 fn router(placement: Placement, id_rule: Option<DocIdRule>) -> TenancyRouter<StubTenancy> {
-    TenancyRouter::new(StubTenancy { placement, id_rule })
+    TenancyRouter::new(StubTenancy {
+        placement,
+        id_rule,
+        admit_writes: true,
+    })
+}
+
+/// A router whose write gate is closed (the partition is in cutover).
+fn blocking_router(placement: Placement) -> TenancyRouter<StubTenancy> {
+    TenancyRouter::new(StubTenancy {
+        placement,
+        id_rule: None,
+        admit_writes: false,
+    })
 }
 
 fn request(method: &str, path: &str, tenant: Option<&str>, body: &[u8]) -> FilterRequest {
@@ -482,6 +501,39 @@ async fn shape_bulk_response_unmaps_ids_and_index() {
         Value::String("orders".to_owned())
     );
     assert_eq!(items[1]["delete"]["_id"], Value::String("2".to_owned()));
+}
+
+#[tokio::test]
+async fn write_during_cutover_is_rejected_409() {
+    // The write gate is closed (cutover): a write fails closed with a retryable 409.
+    let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let (status, body) =
+        immediate(prepare(&blocking_router(dedicated_index()), &parts.ctx()).await);
+    assert_eq!(status, 409);
+    assert_eq!(body["error"], Value::String("stale_epoch".to_owned()));
+}
+
+#[tokio::test]
+async fn read_during_cutover_is_allowed() {
+    // The write gate never blocks reads: a search proceeds even in cutover.
+    let req = request("POST", "/orders/_search", Some("acme"), b"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&blocking_router(dedicated_index()), &parts.ctx()).await);
+    assert_eq!(prepared.path, "/orders-p1/_search");
+}
+
+#[tokio::test]
+async fn bulk_during_cutover_is_rejected_409() {
+    // The gate covers every write path, including `_bulk`.
+    let body = b"{\"index\":{}}\n{\"id\":1}\n";
+    let req = request("POST", "/orders/_bulk", Some("acme"), body);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let (status, _) = immediate(prepare(&blocking_router(dedicated_index()), &parts.ctx()).await);
+    assert_eq!(status, 409);
 }
 
 #[tokio::test]

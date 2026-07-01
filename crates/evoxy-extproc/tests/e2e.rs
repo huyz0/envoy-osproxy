@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
-use evoxy_filter::{Filter, FilterConfig, ReferenceTenancy};
+use evoxy_filter::{Filter, FilterConfig, MigrationPhase, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
 use serde_json::{json, Value};
 use testcontainers::core::{ContainerPort, Host, WaitFor};
@@ -150,11 +150,10 @@ async fn write_then_read_through_envoy() {
     let opensearch = start_opensearch().await;
     let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
 
-    let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::new(
-        "opensearch",
-        "http://unused",
-        "x-tenant",
-    )));
+    // Tenant `frozen` is in the migration cutover window (M5); its writes are held.
+    let tenancy = ReferenceTenancy::new("opensearch", "http://unused", "x-tenant")
+        .with_migration("frozen", MigrationPhase::Cutover);
+    let filter = Filter::new(TenancyRouter::new(tenancy));
     // A small request-body cap so the bounded-memory guard is exercised live: the
     // ~19-byte write below passes; a larger body is refused with `413`.
     let svc_port = spawn_service(ExtProcService::new(filter).with_max_request_body_bytes(64));
@@ -212,6 +211,36 @@ async fn write_then_read_through_envoy() {
         json!("payload_too_large"),
         "shape-only 413: {err}"
     );
+
+    // M5: a write for the `frozen` tenant (in migration cutover) is HELD through
+    // Envoy — fail-closed `409` stale_epoch, retryable. The write is never
+    // forwarded (in-model: the extension rejects, it does not dispatch).
+    let held = http
+        .put(format!("{base}/orders/_doc/7"))
+        .header("x-tenant", "frozen")
+        .header("content-type", "application/json")
+        .body(r#"{"k":7}"#)
+        .send()
+        .await
+        .expect("cutover PUT through Envoy");
+    assert_eq!(held.status().as_u16(), 409, "cutover write held");
+    let held_body: Value = held.json().await.expect("409 json");
+    assert_eq!(
+        held_body["error"],
+        json!("stale_epoch"),
+        "retryable: {held_body}"
+    );
+
+    // A READ for the same migrating tenant is NOT gated (reads resolve to a single
+    // placement). The doc does not exist, so OpenSearch answers 404 — the point is
+    // that the proxy did not hold it with a 409.
+    let read = http
+        .get(format!("{base}/orders/_doc/7"))
+        .header("x-tenant", "frozen")
+        .send()
+        .await
+        .expect("cutover GET through Envoy");
+    assert_ne!(read.status().as_u16(), 409, "reads are never gated");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

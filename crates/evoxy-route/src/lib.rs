@@ -104,6 +104,19 @@ pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Fo
         Err(err) => return Forward::Immediate(immediate(spi_status(&err), spi_code(&err))),
     };
 
+    // Migration write gate (M5, docs/06 §2): a write resolved against a placement
+    // that is now in the cutover window (or superseded) is held — fail closed with
+    // a retryable `409`, so the client re-resolves against the new placement.
+    // Reads are never gated (they always resolve to a single placement). This is
+    // in-model: the write is rejected, never dispatched.
+    if kind.is_write()
+        && !router
+            .admit_write(&resolved.partition, resolved.decision.epoch)
+            .await
+    {
+        return Forward::Immediate(immediate(409, "stale_epoch"));
+    }
+
     match kind {
         EndpointKind::IngestDoc => write_forward(&resolved, ctx),
         EndpointKind::IngestBulk => bulk_forward(&resolved, ctx),

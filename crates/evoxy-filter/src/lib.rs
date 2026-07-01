@@ -13,6 +13,7 @@
 
 mod reference;
 
+pub use osproxy_spi::MigrationPhase;
 pub use reference::{FilterConfig, ReferenceTenancy};
 
 use evoxy_abi::FilterRequest;

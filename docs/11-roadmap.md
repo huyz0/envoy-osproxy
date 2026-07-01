@@ -231,8 +231,28 @@ small routing hardening, tracked as a follow-up (the id is unchanged in `_bulk`/
 
 ## M5 — migration + async fan-out
 
-Epoch-gated write gate and async write mode, reusing `osproxy-tenancy::migration`
-and the async-write seam.
+**(M5a) migration write gate — done and proven live.** `prepare` now runs the
+write gate on **every** write path (`EndpointKind::is_write` — ingest, `_bulk`,
+delete): after resolving, it calls `Router::admit_write(partition, epoch)`; a
+partition in the cutover window is **held** with a fail-closed, retryable `409`
+`stale_epoch` (reads are never gated — they always resolve to a single placement).
+This is in-model: the write is rejected, never dispatched. The `ReferenceTenancy`
+gained `with_migration(partition, phase)` (reusing `osproxy_spi::MigrationPhase`):
+a `Cutover` partition's `admit_write` returns false and its placement carries the
+phase for observability; a real fleet reads this from a `MigrationStore`. Three
+route unit tests (write→409, read allowed, `_bulk`→409); the dedicated e2e marks a
+`frozen` tenant in cutover and asserts a write through stock Envoy is held `409`
+while a read is not gated.
+
+**(M5b) async fan-out — designed (ADR-005), not built.** An Envoy HTTP extension
+cannot cleanly produce to Kafka: stock Envoy has no HTTP→Kafka routing, the
+dynamic module has no runtime to produce from, and putting a producer in the
+ext_proc service reintroduces the dispatch/delivery concerns ADR-002 shed.
+[ADR-005](decisions/005-async-fanout-via-mirror.md) decides fan-out is expressed
+as an Envoy `request_mirror_policies` (shadow) to a dedicated **HTTP→Kafka bridge**
+cluster — Envoy mirrors, a purpose-built bridge (reusing osproxy's async-write
+seam) produces, the filter stays pure. The broker bridge + a live Kafka-mirror
+e2e are deferred; **no Kafka producer is added to the extension or the service.**
 
 ## M6 — FIPS
 

@@ -13,8 +13,8 @@
 
 use osproxy_core::{ClusterId, Epoch, FieldName, IndexName, PartitionId};
 use osproxy_spi::{
-    BodyDoc, DocIdRule, IdTemplate, InjectedField, InjectedValue, Placement, PlacementAt,
-    RequestCtx, SpiError, TenancySpi,
+    BodyDoc, DocIdRule, IdTemplate, InjectedField, InjectedValue, MigrationPhase, Placement,
+    PlacementAt, RequestCtx, SpiError, TenancySpi,
 };
 
 /// The partition-scoped doc-id template used in shared-index mode; `{body.id}`
@@ -98,6 +98,11 @@ pub struct ReferenceTenancy {
     shared_index: Option<IndexName>,
     inject_field: FieldName,
     partition_from_principal: bool,
+    /// An in-flight migration for one partition (M5): its phase gates writes
+    /// (`Cutover` holds them) and is surfaced for observability. A real fleet
+    /// tenancy reads this from a `MigrationStore`; the reference carries one entry
+    /// so the write gate can be exercised.
+    migration: Option<(PartitionId, MigrationPhase)>,
 }
 
 impl ReferenceTenancy {
@@ -115,7 +120,17 @@ impl ReferenceTenancy {
             shared_index: None,
             inject_field: FieldName::from("_tenant"),
             partition_from_principal: false,
+            migration: None,
         }
+    }
+
+    /// Mark one partition as migrating in the given phase (M5). In
+    /// [`MigrationPhase::Cutover`] its writes are held (the write gate returns a
+    /// retryable stale-epoch reject); reads are unaffected.
+    #[must_use]
+    pub fn with_migration(mut self, partition: impl Into<String>, phase: MigrationPhase) -> Self {
+        self.migration = Some((PartitionId::from(partition.into().as_str()), phase));
+        self
     }
 
     /// Construct from a parsed [`FilterConfig`] (dedicated, or shared-index when
@@ -129,6 +144,16 @@ impl ReferenceTenancy {
             shared_index: config.shared_index.as_deref().map(IndexName::from),
             inject_field: FieldName::from(config.inject_field.as_str()),
             partition_from_principal: config.partition_from_principal,
+            migration: None,
+        }
+    }
+
+    /// The migration phase for `partition` (Settled unless it is the one migrating
+    /// partition).
+    fn phase_of(&self, partition: &PartitionId) -> MigrationPhase {
+        match &self.migration {
+            Some((p, phase)) if p == partition => *phase,
+            _ => MigrationPhase::Settled,
         }
     }
 }
@@ -170,7 +195,15 @@ impl TenancySpi for ReferenceTenancy {
         }
     }
 
-    async fn placement_for(&self, _partition: &PartitionId) -> Result<PlacementAt, SpiError> {
+    async fn admit_write(&self, partition: &PartitionId, _epoch: Epoch) -> bool {
+        // The write gate: hold writes during the cutover window (M5, docs/06 §2).
+        // A settled or draining partition admits; only cutover rejects. Epoch
+        // staleness is not a factor here — the transform-then-forward model
+        // resolves and forwards in one pass, so there is no resolve-to-commit gap.
+        self.phase_of(partition) != MigrationPhase::Cutover
+    }
+
+    async fn placement_for(&self, partition: &PartitionId) -> Result<PlacementAt, SpiError> {
         let placement = match &self.shared_index {
             Some(index) => Placement::SharedIndex {
                 cluster: self.cluster.clone(),
@@ -181,6 +214,8 @@ impl TenancySpi for ReferenceTenancy {
                 cluster: self.cluster.clone(),
             },
         };
-        Ok(PlacementAt::new(placement, Epoch::new(1)).with_endpoint(self.endpoint.clone()))
+        Ok(PlacementAt::new(placement, Epoch::new(1))
+            .with_endpoint(self.endpoint.clone())
+            .with_phase(self.phase_of(partition)))
     }
 }

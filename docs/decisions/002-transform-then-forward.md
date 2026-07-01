@@ -55,9 +55,11 @@ the `Sink`.
 - Read-path and `_bulk`/`_mget`/`_msearch` (M2/M3) that need **response**
   transformation will use Envoy's response path (`on_response_body`), still
   transform-not-dispatch: mutate the streamed response, never re-issue it.
-- Async fan-out and migration write-gating (M5) keep the engine's epoch stamping;
-  a stale-epoch decision becomes an immediate `409` from the filter (fail-closed),
-  matching osproxy's live `StaleEpoch → 409`.
+- Migration write-gating (M5) keeps the engine's epoch stamping; a stale-epoch /
+  cutover decision becomes an immediate `409` from the filter (fail-closed),
+  matching osproxy's live `StaleEpoch → 409`. Async **fan-out** cannot be an
+  in-filter dispatch either (an extension can't produce to Kafka) — it is Envoy
+  request-mirroring to a bridge, [ADR-005](005-async-fanout-via-mirror.md).
 - If a future need genuinely requires in-filter dispatch (e.g. scatter that Envoy
   cannot express), it would be a new ADR superseding this one — but v1 single-target
   routing (inherited ADR-002 of osproxy) never does.
