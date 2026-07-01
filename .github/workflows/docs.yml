@@ -5,7 +5,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Deploy the mdBook site to GitHub Pages.
+# Build the Astro + Starlight docs site and deploy it to GitHub Pages.
 permissions:
   contents: read
   pages: write
@@ -18,18 +18,22 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
     steps:
       - uses: actions/checkout@v4
-      - name: install mdbook
-        uses: taiki-e/install-action@v2
+      - uses: actions/setup-node@v4
         with:
-          tool: mdbook
-      - name: build the book
-        run: mdbook build
+          node-version: 22
+      - name: install
+        run: npm ci || npm install
+      - name: build
+        run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: book
+          path: site/dist
 
   deploy:
     needs: build

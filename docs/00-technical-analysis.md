@@ -1,6 +1,5 @@
 # envoy-osproxy — Technical Analysis: extending Envoy without rebuilding it
 
-**Status:** Draft for review · **Date:** 2026-07-01 · **Engine:** osproxy v1.0.1 (crates.io)
 
 ## 1. Goal
 

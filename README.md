@@ -89,13 +89,12 @@ Operators run an unmodified Envoy release. Our logic ships as bootstrap config
 plus a loadable artifact (an `ext_proc` service container, or a `dynamic_modules`
 `.so`). We never patch Envoy source.
 
-## Read here first
+## Documentation
 
-- [docs/00-technical-analysis.md](docs/00-technical-analysis.md) — the approach:
-  no-rebuild extension mechanisms, capability mapping, boundary shifts, milestones.
-- [docs/01-architecture.md](docs/01-architecture.md) ·
-  [docs/12-backend-comparison.md](docs/12-backend-comparison.md) ·
-  [docs/decisions/](docs/decisions) (ADRs).
+The user guide — introduction, architecture (with diagrams), usage, and the
+backend comparison — is published at **https://huyz0.github.io/envoy-osproxy/**
+(source in [docs/guide/](docs/guide)). Internal design notes and decision records
+live under [docs/](docs).
 
 ## License
 
