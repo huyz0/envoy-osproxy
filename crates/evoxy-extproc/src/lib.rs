@@ -12,9 +12,16 @@
 //! and is tested in the gate. Both backends share `evoxy-filter`, so the choice
 //! is a deployment knob (ADR-001).
 #![deny(missing_docs)]
+// JUSTIFY: the ext_proc service's single request/response narrative —
+// `process_message`'s phase dispatch plus the response builders it hands back
+// (route mutation, response reshape, and the reserved admin surfaces it answers:
+// /metrics, /explain, /admin/directives). The stateful bits already live in their
+// own modules (actions/convert/metrics/directives); what remains is the one
+// message-handling flow, which reads worse split mid-`match`.
 
 mod actions;
 mod convert;
+mod directives;
 mod metrics;
 mod service;
 
@@ -25,6 +32,7 @@ pub use actions::CLUSTER_HEADER;
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
+use directives::{constant_time_eq, Directives, ADMIN_PATH};
 use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
 use envoy_types::pb::envoy::r#type::v3::HttpStatus;
 use evoxy_filter::Filter;
@@ -72,23 +80,20 @@ impl Default for StreamState {
 async fn process_message<R: Router>(
     filter: &Filter<R>,
     metrics: &Metrics,
+    directives: &Directives,
+    admin_token: Option<&str>,
     state: &mut StreamState,
     request: ProcessingRequest,
 ) -> ProcessingResponse {
     match request.request {
         Some(Req::RequestHeaders(headers)) => {
             state.headers = convert::extract_headers(&headers);
-            // Reserved admin paths (M7), answered by the filter itself and short-
-            // circuited before any routing — not data-plane requests, so not
-            // counted. `/_evoxy/metrics` is a shape-only counter snapshot;
-            // `/_evoxy/explain/<target>` is a shape-only routing dry-run.
-            if reserved_path(&state.headers) == METRICS_PATH {
-                return metrics_response(metrics);
-            }
-            if let Some(target) = explain_target(&state.headers) {
-                let req =
-                    convert::filter_request(with_path(state.headers.clone(), &target), Vec::new());
-                return explain_response(filter.explain(&req).await);
+            // The reserved admin paths (M7) are answered by the filter itself,
+            // short-circuited before any routing.
+            if let Some(resp) =
+                reserved_response(filter, metrics, directives, admin_token, &state.headers).await
+            {
+                return resp;
             }
             if headers.end_of_stream {
                 finalize(
@@ -128,9 +133,14 @@ async fn process_message<R: Router>(
         // map physical ids back to logical) using the buffered request headers.
         Some(Req::ResponseHeaders(_)) => {
             // Surface the shape-only routing decision (M7) as a response header,
-            // the "why did this route here" the extension knows and Envoy cannot.
-            let req = convert::filter_request(state.headers.clone(), Vec::new());
-            response_headers(filter.decision_shape(&req).await)
+            // the "why did this route here" the extension knows and Envoy cannot —
+            // unless an operator has silenced it via the directive plane.
+            if directives.emit_decision() {
+                let req = convert::filter_request(state.headers.clone(), Vec::new());
+                response_headers(filter.decision_shape(&req).await)
+            } else {
+                response_headers(None)
+            }
         }
         Some(Req::ResponseBody(body)) => {
             let req = convert::filter_request(state.headers.clone(), Vec::new());
@@ -142,6 +152,30 @@ async fn process_message<R: Router>(
             response: Some(extproc::CommonResponse::default()),
         })),
     }
+}
+
+/// The reserved admin paths, answered by the filter itself (M7): `/_evoxy/metrics`
+/// (shape-only counters), `/_evoxy/admin/directives` (token-gated runtime "act"),
+/// and `/_evoxy/explain/<target>` (shape-only routing dry-run). Returns the
+/// immediate response for one of those, or `None` for a normal data-plane request.
+async fn reserved_response<R: Router>(
+    filter: &Filter<R>,
+    metrics: &Metrics,
+    directives: &Directives,
+    admin_token: Option<&str>,
+    headers: &[(String, String)],
+) -> Option<ProcessingResponse> {
+    if reserved_path(headers) == METRICS_PATH {
+        return Some(metrics_response(metrics));
+    }
+    if reserved_path(headers) == ADMIN_PATH {
+        return Some(admin_response(directives, admin_token, headers));
+    }
+    if let Some(target) = explain_target(headers) {
+        let req = convert::filter_request(with_path(headers.to_vec(), &target), Vec::new());
+        return Some(explain_response(filter.explain(&req).await));
+    }
+    None
 }
 
 /// The shape-only routing-decision observability header (M7).
@@ -300,6 +334,65 @@ fn explain_response(body: String) -> ProcessingResponse {
         body: body.into_bytes(),
         ..Default::default()
     }))
+}
+
+/// The token-gated directive-plane reply (M7 "act"): apply any directives named in
+/// the query, then return the current shape-only snapshot. Requires
+/// `Authorization: Bearer <token>` matching the configured admin token; without a
+/// configured token, or on a mismatch, it fails closed `403` — the plane is off
+/// unless deliberately enabled and correctly authenticated.
+fn admin_response(
+    directives: &Directives,
+    admin_token: Option<&str>,
+    headers: &[(String, String)],
+) -> ProcessingResponse {
+    let authorized = admin_token.is_some_and(|token| {
+        bearer(headers).is_some_and(|got| constant_time_eq(got.as_bytes(), token.as_bytes()))
+    });
+    if !authorized {
+        return admin_error(403, "unauthorized");
+    }
+    if let Some(query) = raw_query(headers) {
+        directives.apply_query(query);
+    }
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus { code: 200 }),
+        body: directives.snapshot_json(),
+        ..Default::default()
+    }))
+}
+
+/// A shape-only fail-closed admin reply.
+fn admin_error(status: u16, code: &str) -> ProcessingResponse {
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus {
+            code: i32::from(status),
+        }),
+        body: format!("{{\"error\":\"{code}\"}}").into_bytes(),
+        ..Default::default()
+    }))
+}
+
+/// The bearer token from `Authorization: Bearer <token>` (case-insensitive scheme).
+fn bearer(headers: &[(String, String)]) -> Option<&str> {
+    let auth = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .map(|(_, v)| v.as_str())?;
+    let (scheme, token) = auth.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim())
+}
+
+/// The raw `?query` of the request `:path` (unlike [`reserved_path`], which strips
+/// it), for the directive plane's query settings.
+fn raw_query(headers: &[(String, String)]) -> Option<&str> {
+    headers
+        .iter()
+        .find(|(k, _)| k == ":path")
+        .and_then(|(_, v)| v.split_once('?'))
+        .map(|(_, query)| query)
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.

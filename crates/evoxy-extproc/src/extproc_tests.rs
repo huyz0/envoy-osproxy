@@ -5,6 +5,7 @@ use envoy_types::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
 use evoxy_filter::{Filter, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
 
+use crate::directives::Directives;
 use crate::extproc::processing_request::Request as Req;
 use crate::extproc::processing_response::Response as Resp;
 use crate::extproc::{
@@ -83,7 +84,15 @@ async fn headers_phase_continues_without_mutation() {
     let mut state = StreamState::default();
     let msg = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/42")], false);
 
-    let resp = process_message(&filter(), &Metrics::default(), &mut state, msg).await;
+    let resp = process_message(
+        &filter(),
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        msg,
+    )
+    .await;
 
     assert!(matches!(resp.response, Some(Resp::RequestHeaders(_))));
     // headers were buffered for the body phase.
@@ -103,11 +112,21 @@ async fn body_phase_mutates_route_and_body() {
         ],
         false,
     );
-    let _ = process_message(&filter, &Metrics::default(), &mut state, headers).await;
+    let _ = process_message(
+        &filter,
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        headers,
+    )
+    .await;
 
     let resp = process_message(
         &filter,
         &Metrics::default(),
+        &Directives::default(),
+        None,
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -142,11 +161,21 @@ async fn over_cap_request_body_is_refused_413() {
         ],
         false,
     );
-    let _ = process_message(&filter, &Metrics::default(), &mut state, headers).await;
+    let _ = process_message(
+        &filter,
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        headers,
+    )
+    .await;
 
     let resp = process_message(
         &filter,
         &Metrics::default(),
+        &Directives::default(),
+        None,
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -172,9 +201,25 @@ async fn body_at_cap_is_allowed() {
         ],
         false,
     );
-    let _ = process_message(&filter, &Metrics::default(), &mut state, headers).await;
+    let _ = process_message(
+        &filter,
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        headers,
+    )
+    .await;
 
-    let resp = process_message(&filter, &Metrics::default(), &mut state, body_msg(body)).await;
+    let resp = process_message(
+        &filter,
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        body_msg(body),
+    )
+    .await;
     // Not a 413 — the body is transformed as usual.
     assert!(matches!(resp.response, Some(Resp::RequestBody(_))));
 }
@@ -194,19 +239,43 @@ async fn metrics_path_is_answered_and_counts_outcomes() {
         ],
         false,
     );
-    let _ = process_message(&filter, &metrics, &mut s1, h1).await;
-    let _ = process_message(&filter, &metrics, &mut s1, body_msg(br#"{"k":1}"#)).await;
+    let _ = process_message(&filter, &metrics, &Directives::default(), None, &mut s1, h1).await;
+    let _ = process_message(
+        &filter,
+        &metrics,
+        &Directives::default(),
+        None,
+        &mut s1,
+        body_msg(br#"{"k":1}"#),
+    )
+    .await;
 
     let mut s2 = StreamState::default();
     let h2 = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/2")], false);
-    let _ = process_message(&filter, &metrics, &mut s2, h2).await;
-    let _ = process_message(&filter, &metrics, &mut s2, body_msg(br#"{"k":1}"#)).await;
+    let _ = process_message(&filter, &metrics, &Directives::default(), None, &mut s2, h2).await;
+    let _ = process_message(
+        &filter,
+        &metrics,
+        &Directives::default(),
+        None,
+        &mut s2,
+        body_msg(br#"{"k":1}"#),
+    )
+    .await;
 
     // The reserved path is answered directly with a shape-only snapshot; it is not
     // itself counted.
     let mut s3 = StreamState::default();
     let probe = headers_msg(&[(":method", "GET"), (":path", "/_evoxy/metrics")], true);
-    let resp = process_message(&filter, &metrics, &mut s3, probe).await;
+    let resp = process_message(
+        &filter,
+        &metrics,
+        &Directives::default(),
+        None,
+        &mut s3,
+        probe,
+    )
+    .await;
     let immediate = match resp.response {
         Some(Resp::ImmediateResponse(immediate)) => Some(immediate),
         _ => None,
@@ -224,11 +293,21 @@ async fn unresolved_partition_yields_immediate_response() {
     let filter = filter();
     let mut state = StreamState::default();
     let headers = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/42")], false);
-    let _ = process_message(&filter, &Metrics::default(), &mut state, headers).await;
+    let _ = process_message(
+        &filter,
+        &Metrics::default(),
+        &Directives::default(),
+        None,
+        &mut state,
+        headers,
+    )
+    .await;
 
     let resp = process_message(
         &filter,
         &Metrics::default(),
+        &Directives::default(),
+        None,
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -239,4 +318,72 @@ async fn unresolved_partition_yields_immediate_response() {
         _ => None,
     };
     assert_eq!(status, Some(400));
+}
+
+/// Drive one reserved-path request and return its immediate `(status, body)`.
+async fn admin_probe(
+    directives: &Directives,
+    token: Option<&str>,
+    path: &str,
+    auth: Option<&str>,
+) -> (i32, String) {
+    let mut pairs = vec![(":method", "POST"), (":path", path)];
+    if let Some(a) = auth {
+        pairs.push(("authorization", a));
+    }
+    let mut state = StreamState::default();
+    let resp = process_message(
+        &filter(),
+        &Metrics::default(),
+        directives,
+        token,
+        &mut state,
+        headers_msg(&pairs, true),
+    )
+    .await;
+    let immediate = match resp.response {
+        Some(Resp::ImmediateResponse(immediate)) => Some(immediate),
+        _ => None,
+    }
+    .expect("an immediate admin response");
+    (
+        immediate.status.map(|s| s.code).unwrap_or_default(),
+        String::from_utf8(immediate.body).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn admin_directives_are_token_gated_and_flip_live() {
+    let directives = Directives::default();
+
+    // No token configured, or a wrong/absent bearer → fail closed 403, no change.
+    let (status, _) = admin_probe(
+        &directives,
+        None,
+        "/_evoxy/admin/directives",
+        Some("Bearer s3cret"),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = admin_probe(
+        &directives,
+        Some("s3cret"),
+        "/_evoxy/admin/directives",
+        Some("Bearer wrong"),
+    )
+    .await;
+    assert_eq!(status, 403);
+    assert!(directives.emit_decision(), "unchanged by rejected calls");
+
+    // Correct token flips the directive live and echoes the new state.
+    let (status, body) = admin_probe(
+        &directives,
+        Some("s3cret"),
+        "/_evoxy/admin/directives?emit_decision=false",
+        Some("Bearer s3cret"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, r#"{"emit_decision":false}"#);
+    assert!(!directives.emit_decision(), "flipped live");
 }

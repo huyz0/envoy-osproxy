@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::directives::Directives;
 use crate::extproc::{ProcessingRequest, ProcessingResponse};
 use crate::metrics::Metrics;
 use crate::{process_message, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
@@ -34,6 +35,8 @@ type ServiceRouter = TenancyRouter<ReferenceTenancy>;
 pub struct ExtProcService {
     filter: Arc<Filter<ServiceRouter>>,
     metrics: Arc<Metrics>,
+    directives: Arc<Directives>,
+    admin_token: Option<Arc<str>>,
     max_request_body_bytes: usize,
 }
 
@@ -51,6 +54,8 @@ impl ExtProcService {
         Self {
             filter: Arc::new(filter),
             metrics: Arc::new(Metrics::default()),
+            directives: Arc::new(Directives::default()),
+            admin_token: None,
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
     }
@@ -60,6 +65,14 @@ impl ExtProcService {
     #[must_use]
     pub fn with_max_request_body_bytes(mut self, max_request_body_bytes: usize) -> Self {
         self.max_request_body_bytes = max_request_body_bytes;
+        self
+    }
+
+    /// Enable the runtime directive plane (`/_evoxy/admin/directives`) behind this
+    /// bearer token. Without it the plane fails closed `403` — off by default.
+    #[must_use]
+    pub fn with_admin_token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.admin_token = Some(token.into());
         self
     }
 }
@@ -75,6 +88,8 @@ impl ExternalProcessor for ExtProcService {
         let mut inbound = request.into_inner();
         let filter = self.filter.clone();
         let metrics = self.metrics.clone();
+        let directives = self.directives.clone();
+        let admin_token = self.admin_token.clone();
         let max_request_body_bytes = self.max_request_body_bytes;
         let (tx, rx) = mpsc::channel(16);
 
@@ -85,7 +100,15 @@ impl ExternalProcessor for ExtProcService {
             loop {
                 match inbound.message().await {
                     Ok(Some(req)) => {
-                        let resp = process_message(&filter, &metrics, &mut state, req).await;
+                        let resp = process_message(
+                            &filter,
+                            &metrics,
+                            &directives,
+                            admin_token.as_deref(),
+                            &mut state,
+                            req,
+                        )
+                        .await;
                         if tx.send(Ok(resp)).await.is_err() {
                             break;
                         }

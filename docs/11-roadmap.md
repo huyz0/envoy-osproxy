@@ -340,10 +340,25 @@ surface; `traceparent` is never mutated or stripped. Two abi parser tests + a
 route and a filter test; the shared-index e2e sends a `traceparent` through stock
 Envoy and asserts `/explain` echoes the trace-id.
 
-Remaining M7 (deferred): the write side of the directive plane
-(`/admin/directives`) — the reserved-path serve mechanism exists (`/metrics`,
-`/explain`); a runtime directive store (the "act" half of observe-then-act) is the
-remaining piece.
+**(M7f) directive plane — done and proven live.** The "act" half of
+observe-then-act. A per-instance runtime `Directives` store (relaxed atomics, same
+posture as `/metrics`) carries a shape-only behavior toggle (today: whether the
+decision header is emitted). The token-gated `/_evoxy/admin/directives` reserved
+path applies settings from the query (`?emit_decision=false`) and returns the
+current snapshot; it fails closed `403` without a matching `Authorization: Bearer`
+(constant-time compare, no crypto crate — the extension stays crypto-free,
+ADR-006) and is off entirely unless a token is configured
+(`ExtProcService::with_admin_token`). The filter reads the directive live to gate
+the decision header. Three directive unit tests + a token-gated `process_message`
+test; the shared-index e2e flips the directive **through stock Envoy** (403 without
+the token, `200` with it) and confirms the next read no longer carries the decision
+header — behavior changed **with no restart**. It is a *behavior* toggle, never a
+security policy (those are set at deploy time, not over the wire).
+
+**M7 is complete:** the extension exposes a coherent, in-model observability +
+control plane on Envoy's own port — `/metrics`, `/explain`, the `x-evoxy-decision`
+header, trace-context correlation, the NFR-P A/B substrate, and the token-gated
+directive plane — all shape-only, all proven live through stock Envoy.
 
 ## v2 — the other backend
 

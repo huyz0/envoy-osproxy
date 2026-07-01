@@ -259,7 +259,8 @@ async fn shared_index_isolates_tenants() {
         partition_from_principal: false,
     };
     let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
-    let svc_port = spawn_service(ExtProcService::new(filter));
+    // Enable the runtime directive plane (the M7 "act" surface) behind a token.
+    let svc_port = spawn_service(ExtProcService::new(filter).with_admin_token("s3cret"));
     let (envoy, base) = start_envoy(svc_port, os_port).await;
     let http = reqwest::Client::new();
 
@@ -545,5 +546,46 @@ async fn shared_index_isolates_tenants() {
         reject["status"],
         json!(400),
         "explain reject status: {reject}"
+    );
+
+    // M7 observe→act: flip a runtime directive through Envoy and watch behavior
+    // change with no restart. The decision header is emitted today (asserted
+    // above); a token-gated POST silences it, and the next read carries none.
+    let unauth = http
+        .post(format!(
+            "{base}/_evoxy/admin/directives?emit_decision=false"
+        ))
+        .send()
+        .await
+        .expect("admin without token");
+    assert_eq!(unauth.status().as_u16(), 403, "admin is token-gated");
+
+    let ok = http
+        .post(format!(
+            "{base}/_evoxy/admin/directives?emit_decision=false"
+        ))
+        .header("authorization", "Bearer s3cret")
+        .send()
+        .await
+        .expect("admin flip through Envoy");
+    assert!(ok.status().is_success(), "admin flip: {}", ok.status());
+    let after: Value = ok.json().await.expect("directives json");
+    assert_eq!(
+        after["emit_decision"],
+        json!(false),
+        "directive flipped: {after}"
+    );
+
+    // The next read no longer carries the decision header — the flip took effect
+    // live, fleet-wide-per-instance, no restart.
+    let silenced = http
+        .get(format!("{base}/orders/_doc/1"))
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("read after directive flip");
+    assert!(
+        silenced.headers().get("x-evoxy-decision").is_none(),
+        "decision header silenced by the directive"
     );
 }
