@@ -185,7 +185,13 @@ impl<R: Router> Filter<R> {
     pub async fn decision_shape(&self, req: &FilterRequest) -> Option<String> {
         let parts = evoxy_adapter::RequestParts::from_filter(req, "").ok()?;
         let resolved = self.router.resolve(&parts.ctx()).await.ok()?;
-        Some(evoxy_route::decision_shape(&resolved))
+        let mut shape = evoxy_route::decision_shape(&resolved);
+        // Correlate with Envoy's span (M7): append the W3C trace-id when present.
+        if let Some(trace) = req.trace_id() {
+            shape.push_str(";trace=");
+            shape.push_str(trace);
+        }
+        Some(shape)
     }
 
     /// A **shape-only** routing explain (M7) for `req` — what the filter *would*

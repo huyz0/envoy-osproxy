@@ -12,7 +12,10 @@
 //! is what makes the backend a deployment knob rather than a rewrite (docs/00 §3).
 #![deny(missing_docs)]
 
+mod trace;
 mod xfcc;
+
+pub use trace::trace_id_of;
 
 /// The HTTP version Envoy negotiated with the downstream client. Envoy owns TLS
 /// and codec, so we are told this rather than parsing it off the wire.

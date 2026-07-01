@@ -504,9 +504,12 @@ async fn shared_index_isolates_tenants() {
 
     // M7: the shape-only /explain dry-run, also served by the filter THROUGH Envoy.
     // Explain how acme's search would route — a shape-only decision, no forward.
+    // A W3C `traceparent` (as Envoy propagates) is echoed as the correlation id.
+    let trace = "4bf92f3577b34da6a3ce929d0e0e4736";
     let explain: Value = http
         .get(format!("{base}/_evoxy/explain/orders/_search"))
         .header("x-tenant", "acme")
+        .header("traceparent", format!("00-{trace}-00f067aa0ba902b7-01"))
         .send()
         .await
         .expect("explain through Envoy")
@@ -518,6 +521,11 @@ async fn shared_index_isolates_tenants() {
         explain["decision"],
         json!("transform=both;migration=settled;isolation=on"),
         "explain decision: {explain}"
+    );
+    assert_eq!(
+        explain["trace"],
+        json!(trace),
+        "explain correlates with Envoy's trace-id: {explain}"
     );
     // A missing tenant is explained as a fail-closed reject, not forwarded.
     let reject: Value = http

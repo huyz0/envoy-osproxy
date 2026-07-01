@@ -583,6 +583,24 @@ async fn explain_reports_route_with_shape_only_decision() {
 }
 
 #[tokio::test]
+async fn explain_carries_the_trace_id() {
+    // The W3C trace-id correlates the explain with Envoy's span.
+    let mut req = request("POST", "/shared/_search", Some("acme"), b"{}");
+    req.headers.push((
+        "traceparent".to_owned(),
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+    ));
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let json: Value =
+        serde_json::from_str(&crate::explain(&shared_router(), &parts.ctx()).await).unwrap();
+    assert_eq!(
+        json["trace"],
+        Value::String("4bf92f3577b34da6a3ce929d0e0e4736".to_owned())
+    );
+}
+
+#[tokio::test]
 async fn explain_reports_reject_for_unresolved_partition() {
     // No tenant header → the explain honestly reports the fail-closed reject.
     let req = request("PUT", "/orders/_doc/1", None, b"{}");

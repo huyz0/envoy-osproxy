@@ -175,35 +175,47 @@ fn is_supported(kind: EndpointKind) -> bool {
 /// resolution uses the headers (not the body), so it explains a header/principal-
 /// keyed tenancy; a body-keyed one reports the unresolved reject, honestly.
 pub async fn explain<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> String {
+    // Correlate with Envoy's span: carry the W3C trace-id through when present.
+    let trace = ctx
+        .headers()
+        .get("traceparent")
+        .and_then(evoxy_abi::trace_id_of);
     let kind = ctx.endpoint();
     if !is_supported(kind) {
-        return reject_json(kind, 501, "endpoint_not_supported_yet");
+        return reject_json(kind, 501, "endpoint_not_supported_yet", trace);
     }
     let resolved = match router.resolve(ctx).await {
         Ok(resolved) => resolved,
-        Err(err) => return reject_json(kind, spi_status(&err), spi_code(&err)),
+        Err(err) => return reject_json(kind, spi_status(&err), spi_code(&err), trace),
     };
     if kind.is_write()
         && !router
             .admit_write(&resolved.partition, resolved.decision.epoch)
             .await
     {
-        return reject_json(kind, 409, "stale_epoch");
+        return reject_json(kind, 409, "stale_epoch", trace);
     }
     format!(
-        "{{\"endpoint\":\"{}\",\"outcome\":\"route\",\"decision\":\"{}\"}}",
+        "{{\"endpoint\":\"{}\",\"outcome\":\"route\",\"decision\":\"{}\"{}}}",
         kind.as_str(),
-        decision_shape(&resolved)
+        decision_shape(&resolved),
+        trace_field(trace)
     )
 }
 
 /// A shape-only fail-closed explain line: the endpoint, the reject outcome, and
 /// the status/code `prepare` would return.
-fn reject_json(kind: EndpointKind, status: u16, code: &str) -> String {
+fn reject_json(kind: EndpointKind, status: u16, code: &str, trace: Option<&str>) -> String {
     format!(
-        "{{\"endpoint\":\"{}\",\"outcome\":\"reject\",\"status\":{status},\"code\":\"{code}\"}}",
-        kind.as_str()
+        "{{\"endpoint\":\"{}\",\"outcome\":\"reject\",\"status\":{status},\"code\":\"{code}\"{}}}",
+        kind.as_str(),
+        trace_field(trace)
     )
+}
+
+/// The optional `,"trace":"<id>"` suffix for an explain line (the W3C trace-id).
+fn trace_field(trace: Option<&str>) -> String {
+    trace.map_or_else(String::new, |id| format!(",\"trace\":\"{id}\""))
 }
 
 /// The `_bulk` path: rewrite the NDJSON in place (per-item inject/construct-id/

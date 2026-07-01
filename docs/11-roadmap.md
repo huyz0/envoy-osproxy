@@ -329,10 +329,21 @@ decision + no value leak; unresolved → reject 400) + a `/_evoxy/explain/...` l
 e2e assertion through stock Envoy (acme's search explained as `route`; a missing
 tenant as a `reject`).
 
-Remaining M7 (deferred): reconciling our trace context with Envoy's span
-(traceparent propagation), and the write side of the directive plane
-(`/admin/directives`) — the reserved-path read/serve mechanism now exists
-(`/metrics`, `/explain`); a directive store is the remaining piece.
+**(M7e) trace-context reconciliation — done and proven live.** Envoy owns tracing:
+it generates and propagates the W3C `traceparent` and forwards it upstream, so the
+extension does not manage the span — it only **reads** the trace-id to correlate
+its shape-only signals with Envoy's span. `evoxy_abi::trace_id_of` parses the
+`traceparent` (`version-traceid-spanid-flags`, rejecting a malformed or all-zero
+id); the decision header gains a `;trace=<id>` suffix and `/explain` a `"trace"`
+field when present. A trace-id is a random token (not a tenant value), safe to
+surface; `traceparent` is never mutated or stripped. Two abi parser tests + a
+route and a filter test; the shared-index e2e sends a `traceparent` through stock
+Envoy and asserts `/explain` echoes the trace-id.
+
+Remaining M7 (deferred): the write side of the directive plane
+(`/admin/directives`) — the reserved-path serve mechanism exists (`/metrics`,
+`/explain`); a runtime directive store (the "act" half of observe-then-act) is the
+remaining piece.
 
 ## v2 — the other backend
 

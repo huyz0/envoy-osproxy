@@ -87,6 +87,24 @@ async fn write_is_mutated_and_continued_upstream() {
 }
 
 #[tokio::test]
+async fn decision_shape_carries_trace_id() {
+    // The decision header is correlated with Envoy's span by the W3C trace-id.
+    let mut req = request("GET", "/orders/_doc/1", Some("acme"), b"");
+    req.headers.push((
+        "traceparent".to_owned(),
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+    ));
+    let shape = filter()
+        .decision_shape(&req)
+        .await
+        .expect("a decision shape");
+    assert!(
+        shape.ends_with(";trace=4bf92f3577b34da6a3ce929d0e0e4736"),
+        "trace suffix missing: {shape}"
+    );
+}
+
+#[tokio::test]
 async fn write_without_mtls_is_refused_when_required() {
     // Policy on, no presented identity: a write fails closed with 403.
     let filter = filter().with_require_mtls_for_mutation(true);
