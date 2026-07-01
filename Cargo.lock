@@ -458,6 +458,7 @@ dependencies = [
  "evoxy-abi",
  "evoxy-filter",
  "futures-core",
+ "osproxy-bench",
  "osproxy-tenancy",
  "prost",
  "rcgen",
@@ -1223,6 +1224,14 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "osproxy-bench"
+version = "1.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "osproxy-core"

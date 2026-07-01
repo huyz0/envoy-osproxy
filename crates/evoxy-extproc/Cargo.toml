@@ -28,6 +28,9 @@ serde_json = "1"
 # The mTLS live test (tests/mtls.rs) generates a CA + server + client cert at
 # runtime, so no secrets are committed.
 rcgen = "0.13"
+# The NFR-P A/B bench (tests/perf.rs) reuses osproxy's pure bench crate for the
+# proxy-vs-direct latency profile + verdict.
+osproxy-bench.workspace = true
 
 [lints]
 workspace = true

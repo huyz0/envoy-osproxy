@@ -36,6 +36,9 @@ osproxy-core = { path = "../opensearch-proxy/crates/osproxy-core" }
 osproxy-spi = { path = "../opensearch-proxy/crates/osproxy-spi" }
 osproxy-tenancy = { path = "../opensearch-proxy/crates/osproxy-tenancy" }
 osproxy-rewrite = { path = "../opensearch-proxy/crates/osproxy-rewrite" }
+# The pure NFR-P bench crate (LatencySummary / NfrProfile / judge) — dev-only,
+# reused for the proxy-vs-direct A/B verdict (M7, docs/00 §6).
+osproxy-bench = { path = "../opensearch-proxy/crates/osproxy-bench" }
 
 # Internal crates.
 evoxy-abi = { path = "crates/evoxy-abi" }

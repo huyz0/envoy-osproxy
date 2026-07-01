@@ -274,9 +274,29 @@ module in-binary) does not port — Envoy carries it.
 
 ## M7 — observability + NFR-P
 
-Admin/introspection plane on our port; reconcile tracing with Envoy's span; reuse
-`osproxy-bench` (`NfrProfile`/`judge`) for the proxy-vs-baseline verdict, now
-measuring Envoy + our filter against direct OpenSearch.
+**(M7a) NFR-P A/B latency — done and measured live.** `tests/perf.rs`
+(`#[ignore]`'d) times the *same* GET-by-id directly against OpenSearch (baseline)
+and **through stock Envoy + our ext_proc filter** (proxy), both hitting the same
+physical document so the difference is pure overhead. It reuses osproxy's pure
+bench crate — `LatencySummary` → `NfrProfile` → `judge` → `Verdict` — and prints
+the profile+verdict JSON as the operator/LLM substrate. Assertions are
+host-independent (every request functional, the profile well-formed); absolute
+latency is recorded, not gated.
+
+**Measured here** (dev box, concurrency 1, 100 samples): baseline p50 ≈ 1.2 ms →
+proxy p50 ≈ 4.3 ms, so **added p50 ≈ 3.0 ms / added p99 ≈ 4.3 ms**. That is the
+cost of the **ext_proc IPC hop** — two gRPC round-trips (request + response
+phases, both buffered) — and it quantifies the ext_proc-vs-module tradeoff
+(docs/00 §6): a latency-sensitive deployment picks the in-process dynamic module
+(no hop), an isolation-sensitive one accepts the hop. The `judge` fails the
+*provisional in-process* NFR-P1 bound (2 ms), honestly — the ext_proc hop is not
+an in-proc path; the JSON records the real numbers rather than pretending.
+
+Remaining M7 (deferred): the shape-only routing-decision observability the
+extension uniquely knows (partition/placement/transform/migration as a shape-only
+signal), and reconciling our trace context with Envoy's span. The admin plane
+(`/debug/explain`, `/metrics`, `/admin/directives`) is Envoy-adjacent — Envoy has
+no notion of it — and would live on our own port, a later increment.
 
 ## v2 — the other backend
 
