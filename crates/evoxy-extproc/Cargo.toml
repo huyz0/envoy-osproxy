@@ -1,0 +1,25 @@
+[package]
+name = "evoxy-extproc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ext_proc backend: an Envoy External Processing gRPC service over the same evoxy-filter brain (ADR-001). Pure Rust (tonic), no libclang."
+
+[dependencies]
+evoxy-abi.workspace = true
+evoxy-filter.workspace = true
+osproxy-tenancy.workspace = true
+envoy-types = "0.7"
+tonic = "0.14"
+prost = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = "0.1"
+futures-core = "0.3"
+
+[dev-dependencies]
+
+[lints]
+workspace = true

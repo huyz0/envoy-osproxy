@@ -23,8 +23,10 @@ use osproxy_tenancy::Router;
 /// The Envoy-side effects the filter needs, abstracted from the SDK. The excluded
 /// `evoxy-module` crate implements this over the real Envoy filter handle; tests
 /// implement it with a recorder. All methods are synchronous `&mut self` so the
-/// trait stays object-safe (`&mut dyn EnvoyActions`).
-pub trait EnvoyActions {
+/// trait stays object-safe (`&mut dyn EnvoyActions`). `Send` so a `dyn
+/// EnvoyActions` can be held across an `await` in a spawned task (the ext_proc
+/// backend streams responses from a task).
+pub trait EnvoyActions: Send {
     /// Route the request to this upstream cluster (the logical `ClusterId`; the
     /// Envoy bootstrap maps it to a real cluster — the ADR-002 seam).
     fn set_upstream_cluster(&mut self, cluster: &str);

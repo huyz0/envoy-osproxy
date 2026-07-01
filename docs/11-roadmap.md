@@ -42,8 +42,26 @@ local replies — no Envoy needed. **(1b-module) `evoxy-module` — scaffolded
 (workspace-excluded, ADR-004).** Pinned SDK dep behind a `sdk` feature; the pure
 driver (`Module`/`on_request`, `block_on`) compiles standalone; the SDK binding
 (EnvoyActions-over-handle + `register!`) is the one host-gated seam (needs
-libclang), documented in the crate README. Remaining 1b: write+verify that SDK
-seam on a build host. (1c) the Envoy+OpenSearch testcontainer test.
+libclang), documented in the crate README. Remaining 1b-module: write+verify that
+SDK seam on a build host.
+
+**(1b-extproc) `evoxy-extproc` — done (the verifiable-here backend, ADR-001).** An
+Envoy External Processing gRPC service (`tonic` + `envoy-types`, pure Rust, no
+libclang) over the *same* `evoxy-filter` brain: it assembles a `FilterRequest`
+from the ext_proc header/body phases, runs the brain via an `EnvoyActions` that
+records ext_proc mutations, and streams back a `ProcessingResponse` that rewrites
+`:method`/`:path`, sets the `x-evoxy-cluster` routing header (+`clear_route_cache`),
+and replaces the body — or an `ImmediateResponse` (fail-closed). 3 tests drive
+`process_message` directly (headers-phase continue, body-phase route+body
+mutation, unresolved-partition → 400). The tonic service is concrete over the
+reference tenancy (a generic service can't spawn: `Router::resolve`'s `async fn`
+future isn't provably `Send` generically — a user-tenancy service is the same
+shape monomorphized, deferred).
+
+**(1c) next:** an `#[ignore]` testcontainer integration test — real OpenSearch +
+stock Envoy (ext_proc filter → our service) — asserting a doc written through
+Envoy lands and round-trips. Runnable *here* (Docker is available), unlike the
+dynamic-module path.
 
 User-facing SPI model is settled in ADR-003 and shown in
 [06-wiring-example](06-wiring-example.md): the user implements the same

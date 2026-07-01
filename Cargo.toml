@@ -5,6 +5,7 @@ members = [
     "crates/evoxy-adapter",
     "crates/evoxy-route",
     "crates/evoxy-filter",
+    "crates/evoxy-extproc",
     "xtask",
 ]
 
