@@ -78,9 +78,30 @@ The backend choice is **latency vs. isolation**, quantified:
 Because both link the *same* `evoxy-filter` brain (ADR-001, ADR-004), this is a
 deployment knob, not a rewrite — and the numbers above are why one would turn it.
 
+## Coverage across the axes
+
+The hot path is exercised on the axes that move its cost, each at the tier where
+the signal is clean:
+
+- **Concurrency** (e2e, `evoxy-extproc/tests/scale.rs`): the write-through-ext_proc
+  path swept at c = 1, 8, 32 → an `osproxy_bench::ScalabilityCurve`. Measured
+  (dev box): throughput **scales ≈ 18.6×** (57 → 1057 rps) while p50 stays roughly
+  flat (17 → 23 ms) and tail amplification is **≈ 1.77×** — the filter scales by
+  Envoy's pool reuse, it does not collapse. (This is an e2e axis; the ~2 ms filter
+  cost is *not* isolated here because OpenSearch's ~20 ms write latency swamps it —
+  rewrite cost is a microbench axis instead.)
+- **Rewrite vs. no-rewrite** (micro, `evoxy-route/benches/route.rs`): a dedicated
+  write (index remap only, `BodyTransform::None`) is ≈ **11,000 instr**; the shared
+  write (inject `_tenant` + construct-id + id-encode) is ≈ **17,600 instr** — so the
+  **rewrite itself costs ≈ 6,600 instr**, ~60 % over the no-rewrite path.
+- **Body size** (micro): the same shared write with a ~4 KiB body is ≈ **71,000
+  instr** vs ≈ 17,600 for a ~20 B body — ≈ **4×**, the field-inject byte-splice and
+  JSON validation scaling with the body, as expected.
+
 ## Running the benchmarks
 
 ```
-cargo xtask bench                     # all microbenchmarks (adapter, parse, route, brain)
-cargo test -p evoxy-extproc --test perf -- --ignored   # the NFR-P A/B macrobenchmark (needs Docker)
+cargo xtask bench                                        # all microbenchmarks
+cargo test -p evoxy-extproc --test perf  -- --ignored   # NFR-P A/B + Envoy-vs-filter split (Docker)
+cargo test -p evoxy-extproc --test scale -- --ignored   # concurrency sweep (Docker)
 ```

@@ -66,6 +66,47 @@ fn router() -> TenancyRouter<Stub> {
     TenancyRouter::new(Stub)
 }
 
+/// A dedicated-index tenancy: **no** body rewrite (`BodyTransform::None`) — the
+/// index is remapped but the body passes through untouched. The "rewrite off"
+/// baseline.
+struct Dedicated;
+
+impl TenancySpi for Dedicated {
+    fn resolve_partition(
+        &self,
+        ctx: &RequestCtx<'_>,
+        _body: BodyDoc<'_>,
+    ) -> Result<PartitionId, SpiError> {
+        ctx.headers()
+            .get("x-tenant")
+            .map(PartitionId::from)
+            .ok_or(SpiError::PartitionUnresolved { tried: Vec::new() })
+    }
+
+    fn doc_id_rule(&self) -> Option<DocIdRule> {
+        None
+    }
+
+    fn injected_fields(&self) -> Vec<InjectedField> {
+        Vec::new()
+    }
+
+    async fn placement_for(&self, _partition: &PartitionId) -> Result<PlacementAt, SpiError> {
+        Ok(PlacementAt::new(
+            Placement::DedicatedIndex {
+                cluster: ClusterId::from("eu-1"),
+                index: IndexName::from("orders-p1"),
+            },
+            Epoch::new(1),
+        )
+        .with_endpoint("http://os:9200"))
+    }
+}
+
+fn dedicated_router() -> TenancyRouter<Dedicated> {
+    TenancyRouter::new(Dedicated)
+}
+
 fn request(method: &str, path: &str, body: &[u8]) -> FilterRequest {
     FilterRequest {
         method: method.to_owned(),
@@ -115,6 +156,49 @@ fn bench_prepare_write() -> bool {
         br#"{"id":1001,"who":"acme"}"#,
     ));
     black_box(drive(&req))
+}
+
+// Rewrite OFF: dedicated write, body passes through (index remap only). The delta
+// vs `bench_prepare_write` (shared, inject + construct-id) is the rewrite cost.
+#[library_benchmark]
+fn bench_prepare_write_norewrite() -> bool {
+    let req = black_box(request(
+        "PUT",
+        "/orders/_doc/42",
+        br#"{"id":1001,"who":"acme"}"#,
+    ));
+    let router = dedicated_router();
+    let out = match RequestParts::from_filter(&req, "r") {
+        Ok(parts) => matches!(
+            block_on(prepare(&router, &parts.ctx())),
+            Forward::Upstream(_)
+        ),
+        Err(_) => false,
+    };
+    black_box(out)
+}
+
+/// A shared-index write with a ~4 KiB body — built in setup so the bench measures
+/// only the transform *over the large body* (the field-inject byte-splice), not
+/// the body's allocation.
+fn large_write_req() -> FilterRequest {
+    let big = format!(r#"{{"id":1001,"who":"acme","pad":"{}"}}"#, "x".repeat(4000));
+    request("PUT", "/shared/_doc", big.as_bytes())
+}
+
+// Body size: the same shared-index write, but a ~4 KiB body. Compare to
+// `bench_prepare_write` (~20 B body) to see how the rewrite scales with size.
+#[library_benchmark(setup = large_write_req)]
+fn bench_prepare_write_large(req: FilterRequest) -> bool {
+    let router = router();
+    let out = match RequestParts::from_filter(&req, "r") {
+        Ok(parts) => matches!(
+            block_on(prepare(&router, &parts.ctx())),
+            Forward::Upstream(_)
+        ),
+        Err(_) => false,
+    };
+    black_box(out)
 }
 
 // Search: wrap the query with the mandatory partition filter.
@@ -186,6 +270,8 @@ library_benchmark_group!(
     name = route;
     benchmarks =
         bench_prepare_write,
+        bench_prepare_write_norewrite,
+        bench_prepare_write_large,
         bench_prepare_search,
         bench_prepare_bulk,
         bench_decision_shape,
