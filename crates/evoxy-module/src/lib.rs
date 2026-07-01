@@ -53,11 +53,12 @@ pub fn default_module(
 
 // SDK: the real Envoy ABI binding lives here, behind `--features sdk`, and is the
 // only host-gated code (needs libclang + the Envoy SDK). It (1) implements
-// `EnvoyActions` over the SDK's request handle — `set_method`/`set_path` on the
-// request headers, replacing the body buffer, header set/remove, `send_local_reply`,
-// and selecting the upstream cluster; and (2) implements the SDK's HTTP-filter
-// trait by buffering headers+body into a `FilterRequest`, calling `Module::on_request`,
-// and translating `FilterDecision` into the SDK's continue/stop status; and (3)
-// invokes the SDK registration macro with the `register!` factory. See README.md.
+// `EnvoyActions` over the SDK's request handle — `set_method`/`set_path` via the
+// `:method`/`:path` request headers, body drain+append, header set/remove, and
+// `send_local_reply` via `send_response`; and (2) implements the SDK's `HttpFilter`/
+// `HttpFilterConfig` traits by enumerating the headers and buffering the body into a
+// `FilterRequest`, calling `Module::on_request`, and applying the recorded effects;
+// and (3) invokes `declare_init_functions!`. Uses the OFFICIAL upstream SDK pinned to
+// the Envoy release tag (the ABI hash is load-checked). See README.md.
 #[cfg(feature = "sdk")]
 mod sdk;

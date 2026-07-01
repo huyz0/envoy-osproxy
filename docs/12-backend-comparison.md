@@ -49,21 +49,38 @@ osproxy engine, not the transport.
   negligible in both. The hop, not the brain and not Envoy, dominates ext_proc's
   cost.
 - **dynamic module** runs the brain **in-process** on the Envoy worker and applies
-  the effects directly (set the header on the map, `buffer.replace` the body) —
-  **no gRPC, no hop**. Its overhead is the brain (the same ~13,900 instructions)
-  plus a handful of in-process SDK calls: ~microseconds, no added milliseconds. (A
-  live module e2e is deferred — it needs an Envoy configured to load the `.so`; by
-  construction it runs the identical brain and skips the IPC the e2e measured.)
+  the effects directly (`set_request_header`, drain+append the body buffer) — **no
+  gRPC, no hop**. This is now **measured live, not estimated**: `evoxy-module` is
+  built against the OFFICIAL upstream SDK, baked into a **stock, unmodified
+  `envoyproxy/envoy:v1.37.0`** (no fork, no rebuild — the `.so` is dlopen'd via
+  `ENVOY_DYNAMIC_MODULES_SEARCH_PATH`), and driven through the *same* 3-leg harness
+  (`evoxy-extproc/tests/perf_module.rs`):
+
+  | leg | p50 (dev box) | attributed to |
+  |---|---:|---|
+  | baseline (direct to OpenSearch) | ≈ 1.31 ms | — |
+  | envoy-only (Envoy, **no** filter) | ≈ 1.82 ms | **Envoy's own proxying: ≈ +0.51 ms** |
+  | module (Envoy + in-process module) | ≈ 1.58 ms | **our module: ≈ +0 ms over Envoy** |
+
+  The module leg (1.58 ms) lands **between** the baseline and the bare-Envoy leg —
+  i.e. the module's own cost is *below Envoy's own run-to-run proxying jitter*
+  (~0.3–0.5 ms), so it adds **no measurable milliseconds** over Envoy (throughput
+  ≈ 603 rps). That is exactly what the ~13,900-instruction brain + a few in-process
+  SDK calls predicts — now confirmed on real Envoy, versus ext_proc's measured
+  **+2.3 ms** hop.
 
 ## The verdict
 
 Both backends are Envoy deployments, so both pay Envoy's own proxying overhead
 (≈ +0.8 ms, measured above). The **differentiator** is only the filter transport:
 
+Both legs below are **live-measured** (ext_proc via `perf.rs`, module via
+`perf_module.rs`, same 3-leg harness):
+
 | | brain compute | Envoy overhead (common) | filter transport (differentiator) | total added |
 |---|---|---|---|---|
-| **ext_proc** | ≈ 13,900 instr (~µs) | ≈ +0.8 ms | gRPC marshal + out-of-process hop: **≈ +2.3 ms** | ≈ 3 ms |
-| **dynamic module** | ≈ 13,900 instr (~µs) | ≈ +0.8 ms | in-process SDK calls: **≈ +µs** | ≈ 0.8 ms |
+| **ext_proc** | ≈ 13,900 instr (~µs) | Envoy's own | gRPC marshal + out-of-process hop: **≈ +2.3 ms** | dominated by the hop |
+| **dynamic module** | ≈ 13,900 instr (~µs) | Envoy's own | in-process SDK calls: **≈ +0 ms (in the noise)** | ≈ Envoy alone |
 
 The backend choice is **latency vs. isolation**, quantified:
 
@@ -102,6 +119,11 @@ the signal is clean:
 
 ```
 cargo xtask bench                                        # all microbenchmarks
-cargo test -p evoxy-extproc --test perf  -- --ignored   # NFR-P A/B + Envoy-vs-filter split (Docker)
-cargo test -p evoxy-extproc --test scale -- --ignored   # concurrency sweep (Docker)
+cargo test -p evoxy-extproc --test perf   -- --ignored  # ext_proc NFR-P A/B + Envoy-vs-filter split (Docker)
+cargo test -p evoxy-extproc --test scale  -- --ignored  # concurrency sweep (Docker)
+
+# dynamic-module NFR-P: build the stock-Envoy-plus-.so image first (from ~/work,
+# the parent of both repos), then run the symmetric 3-leg harness:
+docker build -f envoy-osproxy/crates/evoxy-module/docker/Dockerfile -t evoxy-envoy:v1.37.0 .
+cargo test -p evoxy-extproc --test perf_module -- --ignored  # module NFR-P (Docker)
 ```

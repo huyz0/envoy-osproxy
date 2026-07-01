@@ -5,9 +5,11 @@ edition = "2021"
 rust-version = "1.94"
 license = "Apache-2.0"
 publish = false
-description = "The Envoy dynamic-module cdylib: binds the Envoy SDK and adapts it to evoxy-filter's EnvoyActions. Workspace-EXCLUDED (ADR-004) — needs libclang + the Envoy SDK to build."
+description = "The Envoy dynamic-module cdylib: binds the OFFICIAL upstream Envoy dynamic-modules SDK and adapts it to evoxy-filter's EnvoyActions. Workspace-EXCLUDED (ADR-004) — needs libclang + the Envoy SDK to build."
 
 [lib]
+# The `.so` Envoy loads via ENVOY_DYNAMIC_MODULES_SEARCH_PATH. `dynamic_module_config.name`
+# in the Envoy config is `evoxy_module` → Envoy dlopen's `libevoxy_module.so`.
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -16,15 +18,19 @@ evoxy-filter = { path = "../evoxy-filter" }
 osproxy-tenancy = { path = "../../../opensearch-proxy/crates/osproxy-tenancy" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
-# The Envoy dynamic-modules Rust SDK. Pulls `bindgen` (needs libclang) and binds
-# Envoy's C ABI. Optional + off by default so the driver below builds anywhere;
-# enable `--features sdk` on a build host to produce the loadable cdylib (ADR-004).
-# Pinned to a minor; a bump is a deliberate, host-verified event.
-envoy-dynamic-modules-rust-sdk = { version = "0.1", optional = true }
+# The OFFICIAL upstream Envoy dynamic-modules Rust SDK — the crate lives IN the
+# envoyproxy/envoy tree, so we pin it to the exact Envoy release tag. Envoy checks
+# the ABI-header hash at load (`envoy_dynamic_module_on_program_init` returns
+# `kAbiVersion`), so the SDK tag MUST equal the Envoy image tag — a bump is a
+# deliberate, host-verified, paired event (SDK tag ⇔ envoyproxy/envoy:<tag>).
+# Pulls `bindgen` (needs libclang) to bind Envoy's C ABI. Optional + off by default
+# so the pure driver below builds anywhere; enable `--features sdk` on a build host
+# with libclang to produce the loadable cdylib (ADR-004).
+envoy-proxy-dynamic-modules-rust-sdk = { git = "https://github.com/envoyproxy/envoy", tag = "v1.37.0", optional = true }
 
 [features]
 # The real Envoy ABI binding (the `sdk` module). Needs libclang + the SDK.
-sdk = ["dep:envoy-dynamic-modules-rust-sdk"]
+sdk = ["dep:envoy-proxy-dynamic-modules-rust-sdk"]
 
 # NOTE: this crate is intentionally NOT a workspace member (see the root
 # Cargo.toml `exclude`). It is not built by `cargo xtask ci`. A panic must not
