@@ -24,17 +24,43 @@ pub use actions::CLUSTER_HEADER;
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
+use envoy_types::pb::envoy::r#type::v3::HttpStatus;
 use evoxy_filter::Filter;
 use extproc::processing_request::Request as Req;
 use extproc::processing_response::Response as Resp;
-use extproc::{BodyResponse, HeadersResponse, ProcessingRequest, ProcessingResponse};
+use extproc::{
+    BodyResponse, HeadersResponse, ImmediateResponse, ProcessingRequest, ProcessingResponse,
+};
 use osproxy_tenancy::Router;
 
+/// Default cap on a request body the service will buffer and transform, bounding
+/// the per-request working set (the transform-then-forward model must hold the
+/// whole body to rewrite it, so an unbounded body is an unbounded allocation). A
+/// body over the cap is refused with `413` before the brain runs. Configurable
+/// via [`ExtProcService::with_max_request_body_bytes`].
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Per-stream state: the request headers, buffered from the headers phase so the
-/// body phase can build the full request.
-#[derive(Default)]
+/// body phase can build the full request, and the request-body cap.
 struct StreamState {
     headers: Vec<(String, String)>,
+    max_request_body_bytes: usize,
+}
+
+impl StreamState {
+    /// A fresh per-stream state with the given request-body cap.
+    fn new(max_request_body_bytes: usize) -> Self {
+        Self {
+            headers: Vec::new(),
+            max_request_body_bytes,
+        }
+    }
+}
+
+impl Default for StreamState {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_REQUEST_BODY_BYTES)
+    }
 }
 
 /// Process one ext_proc message, producing the response Envoy expects for that
@@ -59,6 +85,11 @@ async fn process_message<R: Router>(
             }
         }
         Some(Req::RequestBody(body)) => {
+            // Bound the working set: the transform holds the whole body, so refuse
+            // an over-cap body up front (fail-closed) rather than allocate for it.
+            if body.body.len() > state.max_request_body_bytes {
+                return payload_too_large();
+            }
             finalize(filter, state.headers.clone(), body.body, Phase::Body).await
         }
         // Response path (M2b): reshape a read's response into the client's logical
@@ -102,6 +133,16 @@ fn response_body(shaped: Option<Vec<u8>>) -> ProcessingResponse {
     };
     wrap(Resp::ResponseBody(BodyResponse {
         response: Some(common),
+    }))
+}
+
+/// A fail-closed `413` for a request body over the cap. Shape-only body (an error
+/// code, no tenant values), matching the brain's immediate replies.
+fn payload_too_large() -> ProcessingResponse {
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus { code: 413 }),
+        body: br#"{"error":"payload_too_large"}"#.to_vec(),
+        ..Default::default()
     }))
 }
 

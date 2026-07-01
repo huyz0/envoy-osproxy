@@ -160,9 +160,30 @@ Wired into `prepare`/`shape_read_response`; the shared-index e2e now runs `_mget
 `_tenant` stripped, and tenant isolation. (Single upstream; cross-cluster fan-out
 is out of scope.)
 
-Remaining M3: Envoy's **STREAMED** body mode for bounded-memory large bodies.
-This is where the ext_proc-vs-module cost of body handling is measured
-(docs/00 §6).
+**(M3d) bounded-memory request bodies — done and proven live.** The transform-
+then-forward model must hold the whole body to rewrite it (parse the NDJSON,
+splice the fields, construct ids), so an unbounded body is an unbounded
+allocation. The ext_proc service now enforces a **request-body cap**
+(`ExtProcService::with_max_request_body_bytes`, default
+`DEFAULT_MAX_REQUEST_BODY_BYTES` = 32 MiB): a body over the cap is refused with a
+fail-closed **`413` `payload_too_large`** (shape-only body) *before* the brain
+buffers or transforms it. Two unit tests (over-cap → 413, at-cap boundary
+allowed) and the `write_then_read` e2e now sends an oversized body through stock
+Envoy and asserts the `413`.
+
+**Finding — true chunked streaming rewrite is `FULL_DUPLEX_STREAMED`, deferred.**
+Envoy's plain `STREAMED` body mode forwards each chunk as the processor returns
+it, so it cannot rewrite a *whole* body (the last chunk's mutation only replaces
+the last chunk). The correct mechanism for buffer-then-rewrite-then-stream with
+bounded memory is `FULL_DUPLEX_STREAMED` (Envoy ≥1.34, `BodySendMode` = 4), which
+also requires trailer mode `SEND` and `StreamedBodyResponse` chunks. It carries a
+real constraint for our model: the `:path`/`:method` mutations a write derives
+from the body must ride the **header** response, which precedes the body — so the
+service must buffer headers+body+trailers before emitting any response (allowed by
+the mode) to keep fail-closed correctness (an isolation reject discovered from the
+body must still be an `ImmediateResponse`, not a request already committed
+upstream). This is the next increment; the cap already bounds memory today. It is
+also where the ext_proc-vs-module cost of body handling is measured (docs/00 §6).
 
 ## M4 — Envoy-owned TLS/mTLS
 

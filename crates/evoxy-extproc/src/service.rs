@@ -11,7 +11,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::extproc::{ProcessingRequest, ProcessingResponse};
-use crate::{process_message, StreamState};
+use crate::{process_message, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 /// The generated tonic server wrapper, re-exported so a binary can mount the
 /// service: `Server::builder().add_service(ExternalProcessorServer::new(svc))`.
@@ -32,6 +32,7 @@ type ServiceRouter = TenancyRouter<ReferenceTenancy>;
 #[derive(Clone)]
 pub struct ExtProcService {
     filter: Arc<Filter<ServiceRouter>>,
+    max_request_body_bytes: usize,
 }
 
 impl std::fmt::Debug for ExtProcService {
@@ -41,12 +42,22 @@ impl std::fmt::Debug for ExtProcService {
 }
 
 impl ExtProcService {
-    /// Build the service over a filter (the brain + the reference tenancy).
+    /// Build the service over a filter (the brain + the reference tenancy), with
+    /// the default request-body cap ([`DEFAULT_MAX_REQUEST_BODY_BYTES`]).
     #[must_use]
     pub fn new(filter: Filter<ServiceRouter>) -> Self {
         Self {
             filter: Arc::new(filter),
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
+    }
+
+    /// Set the request-body cap: a body larger than this is refused with `413`
+    /// before the brain runs, bounding the per-request working set.
+    #[must_use]
+    pub fn with_max_request_body_bytes(mut self, max_request_body_bytes: usize) -> Self {
+        self.max_request_body_bytes = max_request_body_bytes;
+        self
     }
 }
 
@@ -60,12 +71,13 @@ impl ExternalProcessor for ExtProcService {
     ) -> Result<Response<Self::ProcessStream>, Status> {
         let mut inbound = request.into_inner();
         let filter = self.filter.clone();
+        let max_request_body_bytes = self.max_request_body_bytes;
         let (tx, rx) = mpsc::channel(16);
 
         // One task per stream reads request phases and streams back responses.
         // A gRPC service legitimately spawns (the transport owns the runtime).
         tokio::spawn(async move {
-            let mut state = StreamState::default();
+            let mut state = StreamState::new(max_request_body_bytes);
             loop {
                 match inbound.message().await {
                     Ok(Some(req)) => {

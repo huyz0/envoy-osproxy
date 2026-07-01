@@ -112,15 +112,15 @@ async fn start_opensearch() -> ContainerAsync<GenericImage> {
         .expect("opensearch starts")
 }
 
-/// Serve our ext_proc service on an ephemeral host port; returns the port.
-fn spawn_service(filter: Filter<TenancyRouter<ReferenceTenancy>>) -> u16 {
+/// Serve an ext_proc service on an ephemeral host port; returns the port.
+fn spawn_service(service: ExtProcService) -> u16 {
     let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
         tonic::transport::Server::builder()
-            .add_service(ExternalProcessorServer::new(ExtProcService::new(filter)))
+            .add_service(ExternalProcessorServer::new(service))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await
             .ok();
@@ -155,7 +155,9 @@ async fn write_then_read_through_envoy() {
         "http://unused",
         "x-tenant",
     )));
-    let svc_port = spawn_service(filter);
+    // A small request-body cap so the bounded-memory guard is exercised live: the
+    // ~19-byte write below passes; a larger body is refused with `413`.
+    let svc_port = spawn_service(ExtProcService::new(filter).with_max_request_body_bytes(64));
     let (_envoy, base) = start_envoy(svc_port, os_port).await;
     let http = reqwest::Client::new();
 
@@ -186,6 +188,30 @@ async fn write_then_read_through_envoy() {
         .expect("json");
     assert_eq!(got["found"], json!(true), "read via Envoy: {got}");
     assert_eq!(got["_source"]["who"], json!("e2e"));
+
+    // M3d: a request body over the service's cap is refused with `413` THROUGH
+    // Envoy — the bounded-memory guard fails closed before the brain buffers it.
+    let big = format!(r#"{{"k":1,"pad":"{}"}}"#, "x".repeat(128));
+    let too_large = http
+        .put(format!("{base}/orders/_doc/99"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(big)
+        .send()
+        .await
+        .expect("oversized PUT through Envoy");
+    assert_eq!(
+        too_large.status().as_u16(),
+        413,
+        "oversized body refused: {}",
+        too_large.status()
+    );
+    let err: Value = too_large.json().await.expect("413 json body");
+    assert_eq!(
+        err["error"],
+        json!("payload_too_large"),
+        "shape-only 413: {err}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -203,7 +229,7 @@ async fn shared_index_isolates_tenants() {
         inject_field: "_tenant".to_owned(),
     };
     let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
-    let svc_port = spawn_service(filter);
+    let svc_port = spawn_service(ExtProcService::new(filter));
     let (envoy, base) = start_envoy(svc_port, os_port).await;
     let http = reqwest::Client::new();
 

@@ -123,6 +123,50 @@ async fn body_phase_mutates_route_and_body() {
 }
 
 #[tokio::test]
+async fn over_cap_request_body_is_refused_413() {
+    let filter = filter();
+    // A tiny cap so a modest body trips it; the brain never runs.
+    let mut state = StreamState::new(4);
+    let headers = headers_msg(
+        &[
+            (":method", "POST"),
+            (":path", "/orders/_bulk"),
+            ("x-tenant", "acme"),
+        ],
+        false,
+    );
+    let _ = process_message(&filter, &mut state, headers).await;
+
+    let resp = process_message(&filter, &mut state, body_msg(br#"{"k":1}"#)).await;
+    let status = match resp.response {
+        Some(Resp::ImmediateResponse(immediate)) => immediate.status.map(|s| s.code),
+        _ => None,
+    };
+    assert_eq!(status, Some(413));
+}
+
+#[tokio::test]
+async fn body_at_cap_is_allowed() {
+    let filter = filter();
+    let body = br#"{"k":1}"#;
+    // Cap exactly at the body length: the boundary is inclusive (not refused).
+    let mut state = StreamState::new(body.len());
+    let headers = headers_msg(
+        &[
+            (":method", "PUT"),
+            (":path", "/orders/_doc/42"),
+            ("x-tenant", "acme"),
+        ],
+        false,
+    );
+    let _ = process_message(&filter, &mut state, headers).await;
+
+    let resp = process_message(&filter, &mut state, body_msg(body)).await;
+    // Not a 413 — the body is transformed as usual.
+    assert!(matches!(resp.response, Some(Resp::RequestBody(_))));
+}
+
+#[tokio::test]
 async fn unresolved_partition_yields_immediate_response() {
     let filter = filter();
     let mut state = StreamState::default();
