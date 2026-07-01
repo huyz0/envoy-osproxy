@@ -253,8 +253,12 @@ ext_proc service reintroduces the dispatch/delivery concerns ADR-002 shed.
 [ADR-005](decisions/005-async-fanout-via-mirror.md) decides fan-out is expressed
 as an Envoy `request_mirror_policies` (shadow) to a dedicated **HTTP→Kafka bridge**
 cluster — Envoy mirrors, a purpose-built bridge (reusing osproxy's async-write
-seam) produces, the filter stays pure. The broker bridge + a live Kafka-mirror
-e2e are deferred; **no Kafka producer is added to the extension or the service.**
+seam) produces, the filter stays pure. **The mechanism is now proven live**
+(`tests/mirror.rs`): a write through stock Envoy lands in OpenSearch *and* Envoy
+mirrors the request **as the filter transformed it** (physical index,
+partition-scoped id `acme%3A1`, injected `_tenant`) to a recording bridge —
+fire-and-forget, no Kafka producer in the extension. Only the bridge's actual
+Kafka produce (ordinary producer code over osproxy's `krafka` seam) is left.
 
 ## M6 — FIPS — **done**
 

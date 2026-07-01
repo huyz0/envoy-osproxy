@@ -65,9 +65,17 @@ marking the request mirror-eligible.
   *primary* upstream (synchronous), which is a routing choice, not a filter change.
 - **Scope for this milestone (M5):** the migration write-gate is delivered and
   proven live (a cutover write is held with a retryable `409`, in-model). The
-  mirror-to-bridge fan-out is **designed here but not built** — the broker bridge
-  and a live Kafka-mirror e2e are deferred; no Kafka producer is added to the
+  mirror-to-bridge fan-out is designed here; no Kafka producer is added to the
   extension or the ext_proc service.
+- **Mechanism now proven live** (`tests/mirror.rs`, `#[ignore]`'d): a write flows
+  through stock Envoy + our filter into OpenSearch (the primary), and Envoy's
+  `request_mirror_policies` shadows the request — **as the filter transformed it**
+  (physical index `orders_shared`, partition-scoped percent-encoded id
+  `acme%3A1`, injected `_tenant`) — to a second cluster, a recording bridge. So the
+  Envoy-native fan-out carries the *physical* request, fire-and-forget, with the
+  filter staying pure. The recording bridge stands in for the HTTP→Kafka producer;
+  the produce itself (osproxy's `krafka`/async-write seam) is the only remaining
+  piece, and it is ordinary producer code, not novel.
 - If a future need requires the produce to be synchronous/transactional with the
   write (true exactly-once across OpenSearch + Kafka), that is a different problem
   than fan-out and would get its own ADR.
