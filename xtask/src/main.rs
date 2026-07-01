@@ -156,6 +156,11 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            // Skip build outputs (e.g. the excluded module's own `target/`, which
+            // holds generated bindings) — only our source counts toward budgets.
+            if path.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
             out.extend(rust_sources(&path));
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);

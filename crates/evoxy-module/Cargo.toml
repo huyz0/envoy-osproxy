@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 evoxy-abi = { path = "../evoxy-abi" }
 evoxy-filter = { path = "../evoxy-filter" }
 osproxy-tenancy = { path = "../../../opensearch-proxy/crates/osproxy-tenancy" }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 # The Envoy dynamic-modules Rust SDK. Pulls `bindgen` (needs libclang) and binds
 # Envoy's C ABI. Optional + off by default so the driver below builds anywhere;

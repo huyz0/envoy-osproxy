@@ -41,15 +41,26 @@ The non-SDK wiring is in [`src/lib.rs`](src/lib.rs) and is written against
    forwards the mutated request to the selected cluster; `StoppedWithLocalReply`
    ⇒ the local reply was already emitted, return the SDK's "stop" status.
 
-### The one SDK seam
+### The SDK seam — implemented in `src/sdk.rs`
 
-The only SDK-specific code is:
-- implementing `EnvoyActions` over the SDK request handle (set `:method`/`:path`,
-  replace the body buffer, set/remove headers, `send_local_reply`, and select the
-  upstream cluster), and
-- the SDK's module/filter registration macro invoking our `register!` factory.
+`src/sdk.rs` (behind `--features sdk`) is the real binding:
+- `init!(new_http_filter)` registers the module entry point; `new_http_filter`
+  builds the reference tenancy + a runtime.
+- `EvoxyHttpFilter`/`EvoxyInstance` implement the SDK's `HttpFilter`/
+  `HttpFilterInstance`: buffer the needed headers at the header phase, run the
+  brain (`Module::on_request`) at the body phase, and apply the effects.
+- `SdkActions` implements `EnvoyActions` as an owned recorder (so it stays `Send`)
+  and commits body replacement / a fail-closed `send_response` to the Envoy handle.
 
-These are marked `SDK:` in `src/lib.rs`. They are host-gated (needs the SDK) and
-must be verified on a build host — this environment has no `libclang`, so they are
-written to the SDK's documented API but not compiled here (ADR-004). Everything
-else is exercised by `evoxy-filter`'s tests.
+**Verified:** `cargo build --release --features sdk` produces
+`target/release/libevoxy_module.so`, which exports the full
+`envoy_dynamic_module_event_*` ABI (`nm -D` confirms `..._program_init`,
+`..._request_headers`, `..._request_body`, …) — a loadable Envoy dynamic module.
+
+**Known SDK-0.1.x limitation** (documented in `sdk.rs`): the request headers map
+is only reachable in the header phase and cannot be enumerated, so routing/header
+rewrites (multi-cluster, physical-index remap) need the header-phase split (M2),
+exactly like the ext_proc backend. The reference-tenancy default artifact routes
+statically and needs only body mutation + fail-closed reply, which this seam does.
+An end-to-end test through a real Envoy loading the `.so` is future work (parallels
+the ext_proc `tests/e2e.rs`).

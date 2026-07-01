@@ -38,12 +38,15 @@ The filter brain, SDK-agnostic (ADR-004): `Filter::handle` runs adapter → rout
 and issues effects through an `EnvoyActions` abstraction (`ContinueUpstream` /
 `StoppedWithLocalReply`), plus the `ReferenceTenancy` default and `FilterConfig`.
 4 fake-`EnvoyActions` tests assert write-mutation+continue and the fail-closed
-local replies — no Envoy needed. **(1b-module) `evoxy-module` — scaffolded
-(workspace-excluded, ADR-004).** Pinned SDK dep behind a `sdk` feature; the pure
-driver (`Module`/`on_request`, `block_on`) compiles standalone; the SDK binding
-(EnvoyActions-over-handle + `register!`) is the one host-gated seam (needs
-libclang), documented in the crate README. Remaining 1b-module: write+verify that
-SDK seam on a build host.
+local replies — no Envoy needed. **(1b-module) `evoxy-module` — done
+(workspace-excluded, ADR-004).** The pure driver (`Module`/`on_request`) compiles
+standalone; the SDK binding (`src/sdk.rs`, `--features sdk`) implements the SDK's
+`HttpFilter`/`HttpFilterInstance` over the brain via an owned `SdkActions` recorder
+and `init!` registration. **Verified building `libevoxy_module.so`** — exports the
+full `envoy_dynamic_module_event_*` ABI (a loadable module). SDK-0.1.x limits
+routing/header rewrites to the header phase (M2), like ext_proc; the reference
+default (static route) needs only body + fail-closed reply, which it does. Remaining:
+an e2e through a real Envoy loading the `.so` (parallels the ext_proc e2e).
 
 **(1b-extproc) `evoxy-extproc` — done (the verifiable-here backend, ADR-001).** An
 Envoy External Processing gRPC service (`tonic` + `envoy-types`, pure Rust, no
