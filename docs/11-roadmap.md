@@ -79,10 +79,24 @@ User-facing SPI model is settled in ADR-003 and shown in
 `osproxy-spi` traits, statically compiled into a `cdylib` via `register!`, and
 drops the `Sink` seam (Envoy forwards).
 
-## M2 — read path
+## M2 — read path — *in progress*
 
-get-by-id, delete-by-id, `_search`, `_count`. Verify write→read symmetry (the
-logical-id round-trip) end-to-end through Envoy.
+**(M2a) request-side read routing — done.** `evoxy-route` now handles `GetById`,
+`DeleteById`, `Search`, and `Count`: it maps the client's logical id to the
+physical id (`SharedIndex` constructs a partition-scoped id via
+`map_logical_to_physical`; dedicated keeps the client id), routes to the physical
+index, and injects the **mandatory partition filter** into search/count queries
+(`wrap_query`) — the read isolation boundary (ADR-006). The `ROUTE-*` spec and 5
+new `evoxy-route` tests cover dedicated passthrough, `SharedIndex` id-map, and the
+search filter. The e2e now also **reads the document back through Envoy**
+(verified live), so write→read round-trips end to end.
+
+Remaining M2: **(M2b) response-side reshaping** — strip injected fields from
+`_source` and map physical ids back to logical, on Envoy's response path
+(`response_headers`/`response_body` phase). **(M2c) header-phase routing** — move
+cluster selection (and path rewrite) to the header phase so the `x-evoxy-cluster`
+route match works, unlocking multi-cluster selection for both backends (the
+body-phase header mutation from M1 does not reliably re-route).
 
 ## M3 — `_bulk` / `_mget` / `_msearch`
 

@@ -46,5 +46,22 @@ Every error becomes a `Forward::Immediate` with a shape-only body
 - **ROUTE-E0 (invariant)** — an `Unknown`/unsupported endpoint never routes blind;
   it fails closed (INV-4).
 
-> Coverage: `crates/evoxy-route/src/route_tests.rs` covers ROUTE-F1..F5 (dedicated
-> passthrough + shared inject/construct-id), ROUTE-E1, ROUTE-E2, ROUTE-E6.
+## Read path (ROUTE-R*, M2a)
+
+Request-side only; response-side field-strip/id-unmap is M2b.
+
+- **ROUTE-RD1** — `GetById`/`DeleteById`: the physical id is the id rule applied
+  to the client's logical id (`map_logical_to_physical`) when the placement
+  constructs ids, else the client id unchanged; forwarded to
+  `/{physical_index}/_doc/{physical_id}` with the client method and no body,
+  `?routing=` appended when the rule sets it.
+- **ROUTE-RD2** — `Search`/`Count`: forwarded as `POST /{physical_index}/_search`
+  or `/_count`. The mandatory partition filter (`wrap_query` over the injected
+  `PartitionId` field) is applied for a shared index — the read isolation boundary
+  (ADR-006); a dedicated placement (no isolation field) passes the query through.
+- **ROUTE-RD3** — an empty search body becomes `{}` before the filter is applied,
+  so a bodyless search on a shared index is still isolated.
+
+> Coverage: `route_tests.rs` covers ROUTE-F1..F5, ROUTE-E1/E2/E6, and ROUTE-RD1/RD2
+> (dedicated get-by-id + `SharedIndex` id-map + dedicated/shared search + count);
+> `tests/e2e.rs` reads the written doc back through Envoy (write→read round-trip).

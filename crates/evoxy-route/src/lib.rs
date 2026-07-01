@@ -19,13 +19,14 @@
 //! tenant value).
 #![deny(missing_docs)]
 
+mod read;
 mod transform;
 
 use evoxy_abi::FilterResponse;
 use osproxy_core::EndpointKind;
 use osproxy_rewrite::RewriteError;
 use osproxy_spi::{RequestCtx, SpiError};
-use osproxy_tenancy::Router;
+use osproxy_tenancy::{Resolved, Router};
 
 /// What to do with a request after routing: forward it upstream (mutated) or
 /// reply immediately (fail-closed).
@@ -68,23 +69,42 @@ pub enum PrepareError {
     UnresolvedInjectedValue,
 }
 
-/// Prepare a request for forwarding. Dispatches by endpoint; M1 handles
-/// single-document ingest, other endpoints are a fail-closed `501` until their
-/// milestone lands.
+/// Prepare a request for forwarding. Dispatches by endpoint: single-doc ingest,
+/// by-id read/delete, and search/count are handled; others are a fail-closed
+/// `501` until their milestone lands. Resolution (partition + placement) is
+/// reused from the engine for every handled endpoint.
 pub async fn prepare<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Forward {
-    match ctx.endpoint() {
-        EndpointKind::IngestDoc => prepare_write(router, ctx).await,
-        _ => Forward::Immediate(immediate(501, "endpoint_not_supported_yet")),
+    // Reject unhandled endpoints before resolving (cheaper, and avoids resolving a
+    // bulk body as a single doc).
+    let kind = ctx.endpoint();
+    if !matches!(
+        kind,
+        EndpointKind::IngestDoc
+            | EndpointKind::GetById
+            | EndpointKind::DeleteById
+            | EndpointKind::Search
+            | EndpointKind::Count
+    ) {
+        return Forward::Immediate(immediate(501, "endpoint_not_supported_yet"));
     }
-}
 
-/// The single-document write path: resolve, transform, and build the forward.
-async fn prepare_write<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> Forward {
     let resolved = match router.resolve(ctx).await {
         Ok(resolved) => resolved,
         Err(err) => return Forward::Immediate(immediate(spi_status(&err), spi_code(&err))),
     };
 
+    match kind {
+        EndpointKind::IngestDoc => write_forward(&resolved, ctx),
+        EndpointKind::GetById | EndpointKind::DeleteById => by_id_forward(&resolved, ctx),
+        EndpointKind::Search => query_forward(&resolved, ctx, "_search"),
+        EndpointKind::Count => query_forward(&resolved, ctx, "_count"),
+        // Unreachable given the guard above, but fail closed rather than panic.
+        _ => Forward::Immediate(immediate(501, "endpoint_not_supported_yet")),
+    }
+}
+
+/// The single-document write path: apply the body transform and build the forward.
+fn write_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
     let transformed = match transform::apply(
         ctx.body(),
         &resolved.decision.body_transform,
@@ -111,6 +131,72 @@ async fn prepare_write<R: Router + ?Sized>(router: &R, ctx: &RequestCtx<'_>) -> 
         body: transformed.body,
         header_ops: resolved.decision.header_ops.clone(),
     })
+}
+
+/// The by-id read/delete path: map the client's logical id to the physical id
+/// (`SharedIndex` constructs a partition-scoped id; dedicated keeps the client
+/// id) and forward with no body. Response-side field-strip/id-unmap is M2b.
+fn by_id_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
+    let logical_id = ctx.doc_id().unwrap_or_default();
+    let (physical_id, routing) = match read::physical_id(
+        &resolved.decision.body_transform,
+        resolved.partition.as_str(),
+        logical_id,
+    ) {
+        Ok(mapped) => mapped,
+        Err(err) => return Forward::Immediate(immediate(prepare_status(&err), prepare_code(&err))),
+    };
+
+    let target = &resolved.decision.target;
+    let mut path = format!("/{}/_doc/{physical_id}", target.index.as_str());
+    if let Some(routing) = routing {
+        path.push_str("?routing=");
+        path.push_str(&routing);
+    }
+
+    Forward::Upstream(PreparedForward {
+        cluster: target.cluster.as_str().to_owned(),
+        method: method_str(ctx.method()),
+        path,
+        body: Vec::new(),
+        header_ops: resolved.decision.header_ops.clone(),
+    })
+}
+
+/// The search/count path: inject the mandatory partition filter into the query
+/// (the read isolation boundary, ADR-006) and forward to the physical index.
+fn query_forward(resolved: &Resolved, ctx: &RequestCtx<'_>, verb: &str) -> Forward {
+    let filter = read::filter_terms(
+        &resolved.decision.body_transform,
+        resolved.partition.as_str(),
+    );
+    let body = match read::filtered_query(ctx.body(), &filter) {
+        Ok(body) => body,
+        Err(err) => return Forward::Immediate(immediate(prepare_status(&err), prepare_code(&err))),
+    };
+
+    let target = &resolved.decision.target;
+    Forward::Upstream(PreparedForward {
+        cluster: target.cluster.as_str().to_owned(),
+        method: "POST",
+        path: format!("/{}/{verb}", target.index.as_str()),
+        body,
+        header_ops: resolved.decision.header_ops.clone(),
+    })
+}
+
+/// The forwarded HTTP method as a static string.
+fn method_str(method: osproxy_spi::HttpMethod) -> &'static str {
+    use osproxy_spi::HttpMethod;
+    match method {
+        HttpMethod::Put => "PUT",
+        HttpMethod::Post => "POST",
+        HttpMethod::Delete => "DELETE",
+        HttpMethod::Head => "HEAD",
+        // `Get` plus any future non-exhaustive variant: a by-id read defaults to
+        // GET rather than panicking.
+        _ => "GET",
+    }
 }
 
 /// Build the physical write request line: `PUT /{index}/_doc/{id}` when the id is

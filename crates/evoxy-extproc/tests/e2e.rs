@@ -188,4 +188,22 @@ async fn write_through_envoy_lands_in_opensearch() {
     );
     assert_eq!(got["_source"]["k"], serde_json::json!(1));
     assert_eq!(got["_source"]["who"], serde_json::json!("e2e"));
+
+    // 6. Read the same document back THROUGH Envoy (the M2 read path: the GET
+    //    flows through our filter and is forwarded to OpenSearch).
+    let via_envoy: serde_json::Value = http
+        .get(format!("http://{envoy_host}:{envoy_port}/orders/_doc/42"))
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("GET through Envoy")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        via_envoy["found"],
+        serde_json::Value::Bool(true),
+        "read via Envoy: {via_envoy}"
+    );
+    assert_eq!(via_envoy["_source"]["who"], serde_json::json!("e2e"));
 }

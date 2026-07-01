@@ -160,7 +160,8 @@ async fn unsupported_endpoint_is_501_without_resolving() {
         cluster: ClusterId::from("eu-1"),
         index: IndexName::from("orders-p1"),
     };
-    let req = request("POST", "/orders/_search", Some("acme"), b"{}");
+    // `_bulk` is not handled yet (M3), so it fails closed without resolving.
+    let req = request("POST", "/orders/_bulk", Some("acme"), b"{}");
     let parts = RequestParts::from_filter(&req, "r").unwrap();
 
     let (status, body) = immediate(prepare(&router(placement, None), &parts.ctx()).await);
@@ -169,6 +170,109 @@ async fn unsupported_endpoint_is_501_without_resolving() {
         body["error"],
         Value::String("endpoint_not_supported_yet".to_owned())
     );
+}
+
+fn dedicated_index() -> Placement {
+    Placement::DedicatedIndex {
+        cluster: ClusterId::from("eu-1"),
+        index: IndexName::from("orders-p1"),
+    }
+}
+
+#[tokio::test]
+async fn get_by_id_remaps_index_and_keeps_client_id() {
+    let req = request("GET", "/orders/_doc/42", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&router(dedicated_index(), None), &parts.ctx()).await);
+    assert_eq!(prepared.cluster, "eu-1");
+    assert_eq!(prepared.method, "GET");
+    // logical `orders` → physical `orders-p1`; dedicated keeps the client id.
+    assert_eq!(prepared.path, "/orders-p1/_doc/42");
+    assert!(prepared.body.is_empty());
+}
+
+#[tokio::test]
+async fn shared_index_get_by_id_constructs_physical_id() {
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    let req = request("DELETE", "/shared/_doc/1001", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(
+        prepare(
+            &router(shared("eu-1", "shared", inject), Some(id_rule)),
+            &parts.ctx(),
+        )
+        .await,
+    );
+    assert_eq!(prepared.method, "DELETE");
+    assert_eq!(prepared.path, "/shared/_doc/acme:1001?routing=acme");
+}
+
+#[tokio::test]
+async fn search_dedicated_passes_query_through() {
+    let req = request(
+        "POST",
+        "/orders/_search",
+        Some("acme"),
+        br#"{"query":{"match_all":{}}}"#,
+    );
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&router(dedicated_index(), None), &parts.ctx()).await);
+    assert_eq!(prepared.method, "POST");
+    assert_eq!(prepared.path, "/orders-p1/_search");
+    // No injected isolation fields → the query is unchanged.
+    assert_eq!(prepared.body, br#"{"query":{"match_all":{}}}"#);
+}
+
+#[tokio::test]
+async fn search_shared_injects_partition_filter() {
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    let req = request(
+        "POST",
+        "/shared/_search",
+        Some("acme"),
+        br#"{"query":{"match_all":{}}}"#,
+    );
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(
+        prepare(
+            &router(shared("eu-1", "shared", inject), Some(id_rule)),
+            &parts.ctx(),
+        )
+        .await,
+    );
+    assert_eq!(prepared.path, "/shared/_search");
+    // The mandatory partition filter is now in the query (ADR-006).
+    let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+    let filters = body["query"]["bool"]["filter"]
+        .as_array()
+        .expect("a filter clause");
+    assert!(
+        filters
+            .iter()
+            .any(|f| f["term"]["_tenant"] == Value::String("acme".to_owned())),
+        "partition term missing: {body}"
+    );
+}
+
+#[tokio::test]
+async fn count_routes_to_physical_index() {
+    let req = request("GET", "/orders/_count", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let prepared = upstream(prepare(&router(dedicated_index(), None), &parts.ctx()).await);
+    assert_eq!(prepared.path, "/orders-p1/_count");
 }
 
 #[tokio::test]
