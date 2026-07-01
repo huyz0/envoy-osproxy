@@ -20,6 +20,11 @@ thiserror.workspace = true
 [dev-dependencies]
 evoxy-adapter.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "route"
+harness = false
 
 [lints]
 workspace = true

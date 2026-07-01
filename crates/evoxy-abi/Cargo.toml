@@ -10,5 +10,12 @@ description = "Envoy filter-facing wire model: the request/response an ext_proc 
 
 [dependencies]
 
+[dev-dependencies]
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "parse"
+harness = false
+
 [lints]
 workspace = true
