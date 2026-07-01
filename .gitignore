@@ -1,2 +1,4 @@
-/target
+target/
 **/*.rs.bk
+# The excluded evoxy-module builds standalone; its lock is host/feature-specific.
+crates/evoxy-module/Cargo.lock

@@ -48,6 +48,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "evoxy-filter"
+version = "0.0.0"
+dependencies = [
+ "evoxy-abi",
+ "evoxy-adapter",
+ "evoxy-route",
+ "osproxy-core",
+ "osproxy-spi",
+ "osproxy-tenancy",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evoxy-route"
 version = "0.0.0"
 dependencies = [

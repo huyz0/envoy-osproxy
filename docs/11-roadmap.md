@@ -33,10 +33,17 @@ Sub-steps: **(1a) `evoxy-route` — done.** Reuses `Router::resolve` + the
 `PreparedForward` (cluster + physical path + id + mutated body) or a fail-closed
 response; never dispatches (ADR-002). 5 tests trace the `ROUTE-*` contract
 ([route-contract spec](specs/route-contract.md)), covering dedicated passthrough,
-shared-index inject+construct-id, and the fail-closed paths. (1b) `evoxy-filter` —
-the dynamic-module cdylib against the Envoy Rust SDK, exposing the `register!`
-SPI-packaging API (ADR-003) + a default reference-tenancy artifact; (1c) the
-Envoy+OpenSearch testcontainer test.
+shared-index inject+construct-id, and the fail-closed paths. **(1b-brain) `evoxy-filter` — done.**
+The filter brain, SDK-agnostic (ADR-004): `Filter::handle` runs adapter → route
+and issues effects through an `EnvoyActions` abstraction (`ContinueUpstream` /
+`StoppedWithLocalReply`), plus the `ReferenceTenancy` default and `FilterConfig`.
+4 fake-`EnvoyActions` tests assert write-mutation+continue and the fail-closed
+local replies — no Envoy needed. **(1b-module) `evoxy-module` — scaffolded
+(workspace-excluded, ADR-004).** Pinned SDK dep behind a `sdk` feature; the pure
+driver (`Module`/`on_request`, `block_on`) compiles standalone; the SDK binding
+(EnvoyActions-over-handle + `register!`) is the one host-gated seam (needs
+libclang), documented in the crate README. Remaining 1b: write+verify that SDK
+seam on a build host. (1c) the Envoy+OpenSearch testcontainer test.
 
 User-facing SPI model is settled in ADR-003 and shown in
 [06-wiring-example](06-wiring-example.md): the user implements the same

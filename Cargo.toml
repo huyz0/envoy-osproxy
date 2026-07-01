@@ -4,7 +4,17 @@ members = [
     "crates/evoxy-abi",
     "crates/evoxy-adapter",
     "crates/evoxy-route",
+    "crates/evoxy-filter",
     "xtask",
+]
+
+# The Envoy-ABI cdylib is deliberately NOT a workspace member (ADR-004): it links
+# the Envoy dynamic-modules SDK via `bindgen`, which needs `libclang` + Envoy
+# headers, so the gate, fmt, and the arch check never touch it. Build it on its
+# own with `cargo build` from its directory, on a host with those prerequisites —
+# exactly like osproxy's excluded `osproxy-kafka-rdkafka`.
+exclude = [
+    "crates/evoxy-module",
 ]
 
 [workspace.package]
@@ -30,6 +40,7 @@ osproxy-rewrite = { path = "../opensearch-proxy/crates/osproxy-rewrite" }
 evoxy-abi = { path = "crates/evoxy-abi" }
 evoxy-adapter = { path = "crates/evoxy-adapter" }
 evoxy-route = { path = "crates/evoxy-route" }
+evoxy-filter = { path = "crates/evoxy-filter" }
 
 # Third-party.
 thiserror = "2"

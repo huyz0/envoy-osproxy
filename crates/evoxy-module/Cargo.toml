@@ -1,0 +1,34 @@
+[package]
+name = "evoxy-module"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+description = "The Envoy dynamic-module cdylib: binds the Envoy SDK and adapts it to evoxy-filter's EnvoyActions. Workspace-EXCLUDED (ADR-004) — needs libclang + the Envoy SDK to build."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+evoxy-abi = { path = "../evoxy-abi" }
+evoxy-filter = { path = "../evoxy-filter" }
+osproxy-tenancy = { path = "../../../opensearch-proxy/crates/osproxy-tenancy" }
+tokio = { version = "1", features = ["rt"] }
+
+# The Envoy dynamic-modules Rust SDK. Pulls `bindgen` (needs libclang) and binds
+# Envoy's C ABI. Optional + off by default so the driver below builds anywhere;
+# enable `--features sdk` on a build host to produce the loadable cdylib (ADR-004).
+# Pinned to a minor; a bump is a deliberate, host-verified event.
+envoy-dynamic-modules-rust-sdk = { version = "0.1", optional = true }
+
+[features]
+# The real Envoy ABI binding (the `sdk` module). Needs libclang + the SDK.
+sdk = ["dep:envoy-dynamic-modules-rust-sdk"]
+
+# NOTE: this crate is intentionally NOT a workspace member (see the root
+# Cargo.toml `exclude`). It is not built by `cargo xtask ci`. A panic must not
+# unwind across the C ABI into an Envoy worker (ADR-001/INV-3), so the release
+# profile here uses `panic = "abort"`.
+[profile.release]
+panic = "abort"

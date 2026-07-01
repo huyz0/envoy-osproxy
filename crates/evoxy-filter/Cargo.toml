@@ -1,0 +1,24 @@
+[package]
+name = "evoxy-filter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The filter brain: drives adapter -> route and issues SDK-agnostic EnvoyActions. No Envoy SDK dependency (ADR-004); the ABI binding lives in the excluded evoxy-module crate."
+
+[dependencies]
+evoxy-abi.workspace = true
+evoxy-adapter.workspace = true
+evoxy-route.workspace = true
+osproxy-core.workspace = true
+osproxy-spi.workspace = true
+osproxy-tenancy.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
