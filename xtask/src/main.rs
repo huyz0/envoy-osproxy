@@ -9,6 +9,7 @@
 //!   arch     Crate dependency-direction check (downward-only, INV-1).
 //!   budgets  Source-file size budgets; overflow needs a `// JUSTIFY`.
 //!   bench    Deterministic instruction-count microbenchmarks (needs valgrind).
+//!   crypto-free  The shipped extension links no wire crypto (FIPS boundary, M6).
 //!
 //! Mirrors the osproxy sister project's gate (docs/08, docs/09).
 
@@ -26,6 +27,7 @@ fn main() -> ExitCode {
         "arch" => arch(),
         "budgets" => budgets(),
         "bench" => bench(),
+        "crypto-free" => crypto_free(),
         other => Err(format!("unknown command: {other}\n{USAGE}")),
     };
     match result {
@@ -37,12 +39,13 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench>";
+const USAGE: &str = "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench|crypto-free>";
 
 fn run_ci() -> Result<(), String> {
     fmt()?;
     clippy()?;
     arch()?;
+    crypto_free()?;
     test()?;
     doc()?;
     budgets()?;
@@ -110,6 +113,47 @@ fn arch() -> Result<(), String> {
         return Err("arch: evoxy-adapter must not depend on evoxy-route (INV-1)".into());
     }
     println!("arch: dependency direction ok \u{2713}");
+    Ok(())
+}
+
+/// The shipped extension links **no wire crypto** — Envoy owns the data-plane TLS
+/// (ADR-006, the FIPS boundary). We assert every shipped crate's non-dev
+/// dependency tree contains no TLS/crypto crate, so a stray `tonic` tls feature or
+/// a rustls dep can never silently create a FIPS obligation for our code. Test-only
+/// crypto (the mTLS e2e's rcgen/reqwest) is a dev-dependency and excluded.
+fn crypto_free() -> Result<(), String> {
+    // Crate names (as they appear in `cargo tree`) that would put wire crypto in
+    // our binary. `ring v`/`aws-lc` etc. are matched with a trailing space or `-`
+    // so we don't false-match unrelated substrings.
+    const FORBIDDEN: &[&str] = &[
+        "rustls",
+        "ring v",
+        "aws-lc-rs",
+        "aws-lc-sys",
+        "openssl",
+        "boring",
+        "native-tls",
+    ];
+    const SHIPPED: &[&str] = &[
+        "evoxy-abi",
+        "evoxy-adapter",
+        "evoxy-route",
+        "evoxy-filter",
+        "evoxy-extproc",
+    ];
+    for krate in SHIPPED {
+        let tree = capture("cargo", &["tree", "-p", krate, "-e", "no-dev"])?;
+        for forbidden in FORBIDDEN {
+            if tree.contains(forbidden) {
+                return Err(format!(
+                    "crypto-free: {krate} links `{}` on the data path — the wire is \
+                     Envoy's (ADR-006); keep crypto out of the shipped extension",
+                    forbidden.trim_end_matches(" v")
+                ));
+            }
+        }
+    }
+    println!("crypto-free: shipped extension links no wire crypto (Envoy owns TLS) \u{2713}");
     Ok(())
 }
 
@@ -194,6 +238,18 @@ fn which(bin: &str) -> Option<PathBuf> {
 
 fn run(bin: &str, args: &[&str]) -> Result<(), String> {
     run_env(bin, args, &[])
+}
+
+/// Run a command and return its stdout (for gates that inspect output).
+fn capture(bin: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(bin)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to spawn `{bin}`: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("`{bin} {}` failed", args.join(" ")));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("`{bin}` output not utf-8: {e}"))
 }
 
 fn run_env(bin: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {

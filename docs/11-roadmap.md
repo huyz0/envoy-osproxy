@@ -254,10 +254,23 @@ cluster — Envoy mirrors, a purpose-built bridge (reusing osproxy's async-write
 seam) produces, the filter stays pure. The broker bridge + a live Kafka-mirror
 e2e are deferred; **no Kafka producer is added to the extension or the service.**
 
-## M6 — FIPS
+## M6 — FIPS — **done**
 
-Adopt Envoy-BoringSSL-FIPS for the wire; keep the app-level HMAC seam. Document
-the boundary shift from osproxy's ADR-004.
+The FIPS obligation for the **wire** leaves our code entirely: Envoy owns TLS
+(ADR-002), so a FIPS-validated Envoy (BoringSSL-FIPS build) satisfies it, and our
+extension links **no** data-path crypto. [ADR-006](decisions/006-fips-boundary.md)
+records the boundary shift from osproxy's ADR-004 (which put an AWS-LC-FIPS module
+*inside* its binary): here the wire is Envoy's, the Envoy↔ext_proc hop is a UDS
+with no crypto in the sidecar model, and any future app-HMAC (M7 directive/cursor
+tokens) reuses osproxy's `CryptoProvider` seam as an opt-in path.
+
+Enforced, not just asserted: **`cargo xtask crypto-free`** (in `ci`) proves every
+shipped `evoxy-*` crate's non-dev dependency tree contains no
+`rustls`/`ring`/`aws-lc-*`/`openssl`/`boring`/`native-tls`. It passes today
+(`tonic` without its `tls` feature); a stray crypto pull-in now fails the gate, so
+adding wire TLS to the extension becomes a deliberate, reviewed act. The heavy
+part of osproxy's M6 (suite pinning, a runtime FIPS-engaged check, a validated
+module in-binary) does not port — Envoy carries it.
 
 ## M7 — observability + NFR-P
 
