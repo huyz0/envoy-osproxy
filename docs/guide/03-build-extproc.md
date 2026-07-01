@@ -5,10 +5,15 @@ request. Envoy sends the request phases over gRPC, your server returns header an
 body mutations, and Envoy forwards the mutated request to OpenSearch. You get
 process isolation and an independent deploy, at the cost of one out-of-process hop.
 
+The service is generic over your tenancy, so a custom `TenancySpi` works the same
+as the built-in one.
+
 ## The server
 
 An ext_proc server is a `tokio` binary that serves `evoxy_extproc::ExtProcService`
-over `tonic`. This is the same service the live tests run.
+over `tonic`. Use `mimalloc` as the global allocator; its per-thread sharded heaps
+cut allocator contention on the request path, the same choice osproxy's own server
+makes.
 
 `Cargo.toml`:
 
@@ -21,22 +26,31 @@ edition = "2021"
 [dependencies]
 evoxy-extproc = "..."     # this repo
 evoxy-filter = "..."      # this repo
-osproxy-tenancy = "=1.0.1"
+custom-tenancy = "..."    # your tenancy crate
+osproxy-tenancy = "=1.0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tonic = "0.14"
+mimalloc = "0.1"
 ```
 
 `src/main.rs`:
 
 ```rust
+use custom_tenancy::TieredTenancy;
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
-use evoxy_filter::{Filter, ReferenceTenancy};
+use evoxy_filter::Filter;
 use osproxy_tenancy::TenancyRouter;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Partition by the `x-tenant` header, dedicated cluster "opensearch".
-    let tenancy = ReferenceTenancy::new("opensearch", "http://opensearch:9200", "x-tenant");
+    let tenancy = TieredTenancy {
+        partition_header: "x-tenant".to_owned(),
+        cluster: "opensearch".to_owned(),
+        premium: ["acme".to_owned()].into_iter().collect(),
+    };
     let service = ExtProcService::new(Filter::new(TenancyRouter::new(tenancy)));
 
     tonic::transport::Server::builder()
@@ -46,6 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+Swap `TieredTenancy` for `evoxy_filter::ReferenceTenancy` if you want the built-in
+tenancy with no custom code.
 
 `ExtProcService` has two options worth knowing:
 
@@ -82,18 +99,10 @@ The `mutation_rules` line lets the server rewrite routing and headers. The
 `BUFFERED` body modes let it read and reshape whole bodies, which the isolation
 transform needs.
 
-## Custom tenancy on ext_proc
-
-Today `ExtProcService` is built for the reference tenancy. The service type is fixed
-to that tenancy because the router's async methods are not provably `Send` for a
-generic type, and the gRPC response stream must be `Send`. For a custom tenancy
-right now, use the [dynamic module](04-build-module.md), which is generic over the
-tenancy. Making ext_proc generic over any tenancy is a known next step.
-
 ## Verifying it
 
-The end-to-end test in the repository runs exactly this backend against a real
-OpenSearch behind a stock Envoy:
+The end-to-end test in the repository runs this backend against a real OpenSearch
+behind a stock Envoy:
 
 ```sh
 cargo test -p evoxy-extproc --test e2e -- --ignored

@@ -20,9 +20,8 @@ Envoy is the app and forwards upstream (ADR-002).
   generic over your router, so you wire your tenancy into its factory and build
   (`cargo xtask module-image`);
 - an **ext_proc gRPC server** (out-of-process, isolated), a small `tonic`/`tokio`
-  binary serving `evoxy_extproc::ExtProcService`. (Today this backend ships the
-  configurable reference tenancy; a custom SPI on ext_proc is a known next step
-  see `examples/README.md`.)
+  binary serving `evoxy_extproc::ExtProcService`, generic over your tenancy just
+  like the module (see `examples/README.md`).
 
 **3. The Envoy bootstrap**, stock Envoy, no rebuild: load the artifact and map
 each logical `ClusterId` your placement returns to a real upstream cluster. See

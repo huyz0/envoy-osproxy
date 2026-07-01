@@ -119,7 +119,7 @@ async fn start_opensearch() -> ContainerAsync<GenericImage> {
         .expect("opensearch starts")
 }
 
-fn spawn_service(service: ExtProcService) -> u16 {
+fn spawn_service<R: osproxy_tenancy::Router>(service: ExtProcService<R>) -> u16 {
     let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let port = listener.local_addr().unwrap().port();

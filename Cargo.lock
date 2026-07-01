@@ -1252,27 +1252,27 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "osproxy-capture"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a568277605f983bf442c12af1b8863751ccac8791359a0f9514581d1f33106b"
+checksum = "fa817b6e15b122f8046db0569935cb9c55be5149139f946d7e31785345e70912"
 dependencies = [
  "osproxy-spi",
 ]
 
 [[package]]
 name = "osproxy-core"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "501ab5af46f036b8e164cf4eb1c20234ede236d7b22dafc27d444475892202e1"
+checksum = "e7e683eb11926b7cdbd524c0883dcf437c33f4dc97d8809238115fafef312c1d"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "osproxy-kafka"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64979056491b1209d0a83836fa3967329df27684451ebc782e5182a7bd57c2b7"
+checksum = "7199cf95200efb1aaadcc3a031c434317cb78bb91ebf77b59dff5873b747fd4c"
 dependencies = [
  "osproxy-capture",
  "serde",
@@ -1281,9 +1281,9 @@ dependencies = [
 
 [[package]]
 name = "osproxy-rewrite"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbf367387e62b20ad8d351003ee1b282d93bca94e2735fb723ca2cde4bdcca66"
+checksum = "e5dfc06e2341cfd77224c9a4f533216888cd28ea33e920533a28e849ae9ea051"
 dependencies = [
  "osproxy-core",
  "serde_json",
@@ -1292,9 +1292,9 @@ dependencies = [
 
 [[package]]
 name = "osproxy-spi"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "429a7bdddf9dbe098de17d7b72af4cb936c1c3588dddb3cf93c7be327f6c420c"
+checksum = "300a66818fe3148172abea0dd56e0764e1ce0c0c5a26c4275dd120e049b919fd"
 dependencies = [
  "osproxy-core",
  "serde_json",
@@ -1303,9 +1303,9 @@ dependencies = [
 
 [[package]]
 name = "osproxy-tenancy"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b88d25098cf3dc163e08bde2e67a5157930ba7cc515b514d01ec397cf22e5944"
+checksum = "d17ff6f03b92a41c234fb86c3f284dd4fdabb167e0a3d3f1f94847cbac242ade"
 dependencies = [
  "osproxy-core",
  "osproxy-rewrite",

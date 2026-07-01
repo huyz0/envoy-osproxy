@@ -26,7 +26,7 @@ needed. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
 | `evoxy-adapter` | The one seam: `FilterRequest` → `osproxy_spi::RequestCtx`. Depends on `evoxy-abi` + reused `osproxy-core`/`-spi`. |
 | `xtask` | The gate (`cargo xtask ci`). Not shipped; opts out of workspace lints. |
 
-Reused (from crates.io, pinned `=1.0.1`, not vendored): `osproxy-core`,
+Reused (from crates.io, pinned `=1.0.2`, not vendored): `osproxy-core`,
 `osproxy-spi`, `osproxy-tenancy`, `osproxy-rewrite`, `osproxy-kafka`. **Never**
 reuse osproxy's transport/server crates; Envoy replaces those.
 

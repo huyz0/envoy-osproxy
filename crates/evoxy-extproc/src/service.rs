@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessor;
-use evoxy_filter::{Filter, ReferenceTenancy};
-use osproxy_tenancy::TenancyRouter;
+use evoxy_filter::Filter;
+use osproxy_tenancy::Router;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -19,38 +19,40 @@ use crate::{process_message, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
 /// service: `Server::builder().add_service(ExternalProcessorServer::new(svc))`.
 pub use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 
-/// The router the ext_proc service is built over.
-///
-/// Concrete (the reference tenancy) rather than generic over `Router`: a generic
-/// service cannot spawn the response task, because `Router::resolve` is an
-/// `async fn` in a trait and its future is not provably `Send` for a generic
-/// parameter. A concrete router makes the future `Send`, which the streamed task
-/// requires. A user-tenancy service is the same shape monomorphized over that
-/// tenancy (a small macro at the binary — deferred; see the roadmap).
-type ServiceRouter = TenancyRouter<ReferenceTenancy>;
-
-/// The ext_proc service. Each gRPC stream is one downstream request's phases;
-/// state is per-stream.
-#[derive(Clone)]
-pub struct ExtProcService {
-    filter: Arc<Filter<ServiceRouter>>,
+/// The ext_proc service, generic over any tenancy [`Router`]. Each gRPC stream is
+/// one downstream request's phases; state is per-stream.
+pub struct ExtProcService<R> {
+    filter: Arc<Filter<R>>,
     metrics: Arc<Metrics>,
     directives: Arc<Directives>,
     admin_token: Option<Arc<str>>,
     max_request_body_bytes: usize,
 }
 
-impl std::fmt::Debug for ExtProcService {
+// Hand-written so the bound is `Arc`-only, not `R: Clone`.
+impl<R> Clone for ExtProcService<R> {
+    fn clone(&self) -> Self {
+        Self {
+            filter: self.filter.clone(),
+            metrics: self.metrics.clone(),
+            directives: self.directives.clone(),
+            admin_token: self.admin_token.clone(),
+            max_request_body_bytes: self.max_request_body_bytes,
+        }
+    }
+}
+
+impl<R> std::fmt::Debug for ExtProcService<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ExtProcService")
     }
 }
 
-impl ExtProcService {
-    /// Build the service over a filter (the brain + the reference tenancy), with
-    /// the default request-body cap ([`DEFAULT_MAX_REQUEST_BODY_BYTES`]).
+impl<R: Router> ExtProcService<R> {
+    /// Build the service over a filter (the brain plus your tenancy), with the
+    /// default request-body cap ([`DEFAULT_MAX_REQUEST_BODY_BYTES`]).
     #[must_use]
-    pub fn new(filter: Filter<ServiceRouter>) -> Self {
+    pub fn new(filter: Filter<R>) -> Self {
         Self {
             filter: Arc::new(filter),
             metrics: Arc::new(Metrics::default()),
@@ -78,7 +80,7 @@ impl ExtProcService {
 }
 
 #[tonic::async_trait]
-impl ExternalProcessor for ExtProcService {
+impl<R: Router> ExternalProcessor for ExtProcService<R> {
     type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
 
     async fn process(

@@ -14,7 +14,7 @@ This project extends [osproxy](https://github.com/huyz0/opensearch-proxy), the
 standalone OpenSearch proxy, by running its logic inside Envoy instead of osproxy's
 own HTTP server. It reuses osproxy's transport-agnostic engine crates
 (`osproxy-core`, `osproxy-spi`, `osproxy-tenancy`, `osproxy-rewrite`) from crates.io,
-pinned to `=1.0.1`, so a `cargo build` resolves everything with no other repository
+pinned to `=1.0.2`, so a `cargo build` resolves everything with no other repository
 to check out.
 
 osproxy owns the multi-tenant OpenSearch logic. Envoy owns the wire: HTTP, TLS and

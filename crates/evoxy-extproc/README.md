@@ -16,6 +16,6 @@ port as immediate responses, so there is no second server: `/_evoxy/metrics` for
 shape-only counters, `/_evoxy/explain/...` for a dry-run of how a request would
 route, and `/_evoxy/admin/directives` to flip runtime diagnostics behind the token.
 
-The service is built for the reference tenancy today. A custom tenancy needs the
-router to be generic, which the async-in-trait `Send` bound blocks for now; use the
-dynamic module for a custom tenancy until that lands.
+`ExtProcService` is generic over the tenancy router, so a custom `TenancySpi` runs
+here the same as the reference one. This works because the osproxy SPI returns
+`Send` futures (osproxy 1.0.2), which the gRPC response stream requires.

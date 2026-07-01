@@ -59,10 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The ext_proc service is built for the reference tenancy today. The router's async
-methods are not provably `Send` for a generic type, and the gRPC response stream
-must be `Send`, so a custom tenancy uses the dynamic module for now. Making ext_proc
-generic over any tenancy is a known next step.
+Both backends are generic over your tenancy, so `TieredTenancy` (or any
+`TenancySpi`) works on either. Swap `ReferenceTenancy` for your type in the code
+above.
 
 ## Configure Envoy
 
@@ -84,5 +83,4 @@ path rewrite, field injection, partition-scoped id) and response reshaping;
 
 Not honored live yet: a per-request cluster override, because the module does not
 apply one, so a multi-tenant placement that varies the cluster per request does not
-route to different clusters. Single-cluster placement is the supported path. A
-custom tenancy on the ext_proc backend needs the generic-router work above.
+route to different clusters. Single-cluster placement is the supported path.
