@@ -1,11 +1,11 @@
-# Example Envoy bootstrap — DYNAMIC MODULE backend.
+# Example Envoy bootstrap: DYNAMIC MODULE backend.
 #
 # Runs the evoxy dynamic module IN-PROCESS on a stock envoyproxy/envoy:v1.37.0
 # (no fork, no rebuild). The `.so` is found via ENVOY_DYNAMIC_MODULES_SEARCH_PATH
 # (the image built by `cargo xtask module-image` sets it to /usr/local/lib).
 #
 # This example uses the built-in reference tenancy in shared-index mode (no custom
-# code) — every tenant shares one physical index, isolated by an injected field and
+# code): every tenant shares one physical index, isolated by an injected field and
 # a partition-scoped id. To run YOUR own TenancySpi instead, see examples/README.md.
 static_resources:
   listeners:

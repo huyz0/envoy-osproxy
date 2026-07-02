@@ -87,7 +87,7 @@ Pushing a `v*` tag runs the [Release](.github/workflows/release.yml) workflow, w
 publishes the reusable library crates to crates.io. There is no prebuilt binary or
 image: the dynamic module is a `.so` you build from your own tenancy (see
 [evoxy-module-sdk](crates/evoxy-module-sdk)), and the ext_proc backend is a small
-binary you build — both embed your tenancy, so there is nothing generic to ship.
+binary you build. Both embed your tenancy, so there is nothing generic to ship.
 
 ## License
 

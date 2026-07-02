@@ -2,7 +2,7 @@
 
 Envoy already gives you the wire-level telemetry: access logs, tracing spans,
 retries and circuit-breaker stats, and its own admin `/stats`. What Envoy cannot see
-is the tenancy decision — which partition a request resolved to, what transform ran,
+is the tenancy decision: which partition a request resolved to, what transform ran,
 whether a write was held for a migration. evoxy adds a thin layer for exactly that,
 carried over from osproxy's observability model.
 
@@ -30,7 +30,7 @@ leaks nothing:
 
 `routed` is requests forwarded upstream; `rejected` is fail-closed replies
 (unresolved partition, isolation reject, stale-epoch, over-cap). Per instance by
-design — a fleet rollup is your metrics system's job.
+design; a fleet rollup is your metrics system's job.
 
 ### The `x-evoxy-decision` response header
 
@@ -63,7 +63,7 @@ GET /_evoxy/explain/orders/_doc/1        (no tenant header)
 This is the break-glass "why did this route here" for an operator, without touching
 real data.
 
-### `POST /_evoxy/admin/directives` — the runtime knob
+### `POST /_evoxy/admin/directives`, the runtime knob
 
 The one surface that changes behavior, so it is **token-gated**. Today it carries one
 directive: whether the decision header is emitted.
@@ -74,14 +74,14 @@ Authorization: Bearer <token>
 → { "emit_decision": false }        # 200; the change is live, no restart
 ```
 
-Without a configured token, or with a wrong one, it fails closed `403` — the plane is
+Without a configured token, or with a wrong one, it fails closed `403`. The plane is
 off unless you deliberately enable it. The comparison is constant-time, so a wrong
 token cannot be recovered by timing.
 
 ## Enabling it
 
-The admin token is set when you build the service (there is no default — the plane is
-off until you provide one):
+The admin token is set when you build the service (there is no default, so the plane
+is off until you provide one):
 
 ```rust
 use evoxy_extproc::{ExtProcService, ExternalProcessorServer};
@@ -92,7 +92,7 @@ let service = ExtProcService::new(filter)
 
 `/_evoxy/metrics` and `/_evoxy/explain/...` need no configuration; they are shape-only
 and always answered. If you want to restrict even those, match the `/_evoxy/` prefix
-in your Envoy route config and gate it there — they are ordinary HTTP paths on the
+in your Envoy route config and gate it there. They are ordinary HTTP paths on the
 same listener.
 
 ## Tracing
@@ -109,6 +109,6 @@ This is a deliberate subset of osproxy's observability. osproxy also ships a
 break-glass capture tape, an OTLP span exporter, a fleet directive store, and
 structured request logs. Those are engine features that a standalone proxy owns
 end to end; behind Envoy, the base telemetry (spans, logs, stats) is Envoy's job, so
-evoxy exposes only the tenancy-decision layer on top — the metrics, the decision
+evoxy exposes only the tenancy-decision layer on top: the metrics, the decision
 header, the explain dry-run, and the one runtime directive. The shape-only,
 fail-closed, no-value-leak posture is the same.

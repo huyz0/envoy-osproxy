@@ -65,5 +65,5 @@ cargo xtask module-image
 cargo test -p evoxy-extproc --test perf_module -- --ignored    # dynamic module, three legs
 ```
 
-For the full picture — added latency, the concurrency sweep, and the per-request
-transform cost by body size — see [Benchmarks](06-benchmarks.md).
+For the full picture (added latency, the concurrency sweep, and the per-request
+transform cost by body size), see [Benchmarks](06-benchmarks.md).

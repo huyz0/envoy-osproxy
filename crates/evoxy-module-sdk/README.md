@@ -52,7 +52,7 @@ bookworm (glibc 2.36), which loads on the image's Ubuntu 24.04 (glibc 2.39).
 
 `Module` (pure Rust over [`evoxy-filter`](../evoxy-filter)) holds the `Filter` brain
 and a Tokio runtime handle: per request it enumerates the headers, buffers the body,
-runs `Filter::handle` on the runtime (`block_on` — the in-memory placements resolve
+runs `Filter::handle` on the runtime (`block_on`, since the in-memory placements resolve
 without I/O), and applies the recorded effects. The `sdk` module implements the
 SDK's `HttpFilterConfig`/`HttpFilter` generic over your router, with `SdkActions` as
 an owned `EnvoyActions` recorder (so it stays `Send`) that commits the method, path,

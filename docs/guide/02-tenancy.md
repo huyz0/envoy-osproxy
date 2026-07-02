@@ -137,7 +137,7 @@ Because the id template is reversible, the client sends and receives its own
 Returning a different `cluster` per request routes to a different upstream on both
 backends: the filter sets the resolved cluster on the `x-evoxy-cluster` header and
 Envoy selects the upstream from header-matched routes. Your bootstrap needs those
-routes — see [Building the dynamic module](04-build-module.md).
+routes; see [Building the dynamic module](04-build-module.md).
 
 ## Next
 

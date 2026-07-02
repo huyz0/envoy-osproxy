@@ -1,9 +1,9 @@
-# Example Envoy bootstrap — EXT_PROC backend.
+# Example Envoy bootstrap: EXT_PROC backend.
 #
 # Envoy calls an out-of-process gRPC service (your ext_proc binary) per request;
 # the service runs the same brain and returns header/body mutations. This example
 # uses the built-in reference tenancy in shared-index mode (configured entirely by
-# the service's construction — the ext_proc service ships the reference tenancy;
+# the service's construction: the ext_proc service ships the reference tenancy;
 # see examples/README.md and the "current limitations" there re: a custom SPI on
 # this backend).
 static_resources:

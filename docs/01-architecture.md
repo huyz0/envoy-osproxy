@@ -1,4 +1,4 @@
-# 01 — Architecture
+# 01. Architecture
 
 ## The one idea
 
@@ -23,19 +23,19 @@ a single entry point (`Pipeline::handle`). See
 
 ## Layers
 
-- **`evoxy-abi`** — the Envoy-facing wire model. `FilterRequest` is what a filter
+- **`evoxy-abi`**: the Envoy-facing wire model. `FilterRequest` is what a filter
   receives (method, `:path`, authority, version, headers, body, Envoy-validated
   `MtlsIdentity`); `FilterResponse` is an immediate reply. Both extension
   mechanisms (§ below) decode into these *same* types. Pure leaf, no I/O, no
   osproxy dependency.
 
-- **`evoxy-adapter`** — the seam. `RequestParts::from_filter` extracts owned
+- **`evoxy-adapter`**: the seam. `RequestParts::from_filter` extracts owned
   facets once (classifying the path into an `EndpointKind`, deriving the principal
   from mTLS identity), and `RequestParts::ctx()` builds the borrowing
   `osproxy_spi::RequestCtx` the engine consumes. This is the whole port thesis in
   one function.
 
-- **reused osproxy engine** — pulled from crates.io (`osproxy-tenancy`/`-rewrite`/
+- **reused osproxy engine**: pulled from crates.io (`osproxy-tenancy`/`-rewrite`/
   `-spi`/`-core`, pinned `=1.0.2`), unchanged, not vendored. The adapter hands it a
   `RequestCtx`; `evoxy-route` resolves it through the tenancy `Router` and applies
   the body transform, producing either the mutated request Envoy forwards or a
@@ -56,7 +56,7 @@ The filter can plug into Envoy two ways (ADR-001), and both consume the same
 ## Boundaries that moved off us to Envoy
 
 TLS/mTLS termination, HTTP/2, connection pooling, circuit breaking, retries, load
-balancing, access logs, base tracing span — all Envoy's now. What stays ours:
+balancing, access logs, base tracing span, all Envoy's now. What stays ours:
 tenancy/rewrite/migration/observability semantics, and the admin/introspection
 plane (`/_evoxy/explain/<target>`, `/_evoxy/admin/directives`, `/_evoxy/metrics`),
 which Envoy has no notion of and which the backend answers on reserved paths. FIPS for the wire

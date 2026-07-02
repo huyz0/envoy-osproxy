@@ -1,9 +1,9 @@
-# Example Envoy bootstrap — DYNAMIC FORWARD PROXY to HTTPS upstreams (AWS ALBs).
+# Example Envoy bootstrap: DYNAMIC FORWARD PROXY to HTTPS upstreams (AWS ALBs).
 #
 # Same idea as dynamic-forward-proxy.yaml, but the upstreams are HTTPS (e.g. AWS
 # Application Load Balancers). The tenancy returns an `https://…` endpoint, the
 # module sets it as `:authority`, and Envoy's dynamic_forward_proxy dials it over
-# TLS — SNI and certificate-hostname validation follow the per-request host, so ONE
+# TLS. SNI and certificate-hostname validation follow the per-request host, so ONE
 # cluster serves any number of HTTPS hosts. This is the sweet spot for ALBs: they
 # all chain to public CAs, so a single trust store validates every one.
 #

@@ -1,10 +1,10 @@
-# Example Envoy bootstrap — DYNAMIC MODULE backend, MULTIPLE upstream clusters.
+# Example Envoy bootstrap: DYNAMIC MODULE backend, MULTIPLE upstream clusters.
 #
 # Same in-process module as dynamic-module.yaml, but here a tenancy that returns a
 # different cluster per tenant routes to a different OpenSearch. The module sets the
 # resolved cluster on the `x-evoxy-cluster` request header (at the header phase, so
 # it is present before Envoy picks the route); the header-matched routes below select
-# the upstream. Still a stock envoyproxy/envoy — no fork, no rebuild.
+# the upstream. Still a stock envoyproxy/envoy, no fork, no rebuild.
 #
 # This example drives it with the built-in reference tenancy and a
 # `cluster_by_partition` map. A custom TenancySpi does the same by returning the

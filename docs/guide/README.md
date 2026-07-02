@@ -6,7 +6,7 @@ Envoy, without forking, patching, or recompiling Envoy. Point a standard
 per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
 demux, epoch-gated migration, shape-only observability, and async fan-out.
 
-## An extension of osproxy that leverages Envoy
+## An extension of osproxy that runs inside Envoy
 
 envoy-osproxy is an extension of [osproxy](https://github.com/huyz0/opensearch-proxy),
 the standalone multi-tenant OpenSearch proxy. It runs osproxy's logic inside Envoy

@@ -1,12 +1,12 @@
-# Example Envoy bootstrap — DYNAMIC MODULE backend, DYNAMIC FORWARD PROXY.
+# Example Envoy bootstrap: DYNAMIC MODULE backend, DYNAMIC FORWARD PROXY.
 #
 # The osproxy-parity model: your tenancy returns the upstream ENDPOINT (via
 # `placement_for(...).with_endpoint(...)`), the module sets it as the request
 # `:authority`, and Envoy's built-in dynamic_forward_proxy DIALS that host on
-# demand — no cluster defined per upstream, no CDS, no control plane. Add a tenant
+# demand, with no cluster defined per upstream, no CDS, no control plane. Add a tenant
 # by returning its endpoint from the SPI; nothing in the Envoy config changes.
 #
-# Still a stock envoyproxy/envoy — dynamic_forward_proxy is a built-in filter +
+# Still a stock envoyproxy/envoy; dynamic_forward_proxy is a built-in filter +
 # cluster, so this is config, not a fork.
 #
 # Filter order matters: the evoxy module runs FIRST (it rewrites `:authority` to the

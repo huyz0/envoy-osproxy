@@ -12,7 +12,7 @@ A stock Envoy loads the built `libevoxy_module.so`; the reference router reads i
 placement (dedicated cluster or shared index) from Envoy's `filter_config` blob.
 
 To build your **own** module (with your tenancy) you write the same one line with
-your factory instead of `reference_router` — you do not fork this crate. See
+your factory instead of `reference_router`, so you do not fork this crate. See
 [`evoxy-module-sdk`](../evoxy-module-sdk) and
 [`examples/custom-module`](../../examples/custom-module).
 

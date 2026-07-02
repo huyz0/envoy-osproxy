@@ -43,9 +43,9 @@ evoxy_module_sdk::register!(|config: &str| {
 ```
 
 `cargo build --release` in that crate produces your `.so`. `evoxy-module-sdk` is a
-git dependency (it links the Envoy SDK, which crates.io forbids at publish time —
-harmless, since a `.so` is never published). To bake the reference module into a
-stock Envoy image, run `cargo xtask module-image`.
+git dependency because it links the Envoy SDK, which crates.io forbids at publish
+time. That is harmless here: you build and deploy a `.so`, you never publish it. To
+bake the reference module into a stock Envoy image, run `cargo xtask module-image`.
 
 The ext_proc server is a small `tokio` and `tonic` binary serving `ExtProcService`.
 The reference-tenancy server the live tests run is a few lines:
@@ -90,4 +90,4 @@ path rewrite, field injection, partition-scoped id) and response reshaping;
 `_bulk`/`_mget`/`_msearch`; bounded-memory caps; the migration write gate; and
 per-request cluster routing (a tenancy that returns a different cluster per tenant
 lands each tenant on a different upstream, via `x-evoxy-cluster` header-matched
-routes — see [`envoy/dynamic-module-multicluster.yaml`](envoy/dynamic-module-multicluster.yaml)).
+routes; see [`envoy/dynamic-module-multicluster.yaml`](envoy/dynamic-module-multicluster.yaml)).

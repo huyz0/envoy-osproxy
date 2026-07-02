@@ -28,7 +28,7 @@ needed. See [`docs/00-technical-analysis.md`](docs/00-technical-analysis.md).
 | `evoxy-filter` | The SDK-agnostic brain: drives adapt → route → effects over an `EnvoyActions` seam. Generic over the tenancy `Router`. |
 | `evoxy-extproc` | The out-of-process backend: a `tonic` ext_proc gRPC service over `evoxy-filter`. Pure Rust, built and tested in the gate. |
 | `evoxy-module-sdk` | The reusable module toolkit: the `register!` macro + SDK binding (generic over any tenancy) + `Module` driver. Links the Envoy SDK (git); what a user's cdylib depends on. Workspace-EXCLUDED (ADR-004). |
-| `evoxy-module` | The in-process backend: the **reference** dynamic-module cdylib, one `register!` over `evoxy-module-sdk`. Workspace-EXCLUDED — needs libclang. |
+| `evoxy-module` | The in-process backend: the **reference** dynamic-module cdylib, one `register!` over `evoxy-module-sdk`. Workspace-EXCLUDED, needs libclang. |
 | `evoxy-bridge` | The async fan-out bridge (ADR-005): a mirrored request → a Kafka record over `osproxy-kafka`'s `Producer` seam. Separate deployment artifact. |
 | `evoxy-bench` | Dev-only NFR-P substrate (latency/throughput/scalability summaries + judges). Owned here; not shipped. |
 | `xtask` | The gate (`cargo xtask ci`). Not shipped; opts out of workspace lints. |

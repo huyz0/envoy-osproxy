@@ -31,12 +31,12 @@ isolate.
 ## Added latency: the headline
 
 The added-latency harnesses (`perf.rs`, `perf_module.rs`) send the same write three
-ways — straight to OpenSearch, through a bare Envoy with no filter, and through the
-proxy — and report the differences. Single connection, 100 samples, small body.
+ways (straight to OpenSearch, through a bare Envoy with no filter, and through the
+proxy) and report the differences. Single connection, 100 samples, small body.
 
 | path | p50 | added over direct | added over Envoy |
 |---|---:|---:|---:|
-| direct to OpenSearch | 1.1 to 1.3 ms | baseline | — |
+| direct to OpenSearch | 1.1 to 1.3 ms | baseline | n/a |
 | bare Envoy (no filter) | ~1.8 ms | ~0.5 to 0.7 ms | baseline |
 | **dynamic module** (in-process) | ~1.6 ms | ~0.5 ms | **~0 ms** |
 | **ext_proc** (out-of-process gRPC) | ~3.8 ms | ~2.5 ms | **~2.0 ms** |
@@ -65,7 +65,7 @@ Throughput scales **20x** from 1 to 32 connections while p50 stays roughly flat 
 to 25 ms). The tail grows ~2x, which is queueing at the single-node OpenSearch under
 load, not the proxy: added concurrency buys work rather than inflating the
 proxy's per-request cost. The p50 here is OpenSearch's write latency (~18 ms), not
-the proxy — the proxy's contribution is the ~2 ms from the table above.
+the proxy; the proxy's contribution is the ~2 ms from the table above.
 
 ## Body size and transform cost (CPU)
 
