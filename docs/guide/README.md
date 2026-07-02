@@ -65,3 +65,5 @@ Both are verified end to end through a stock, unmodified Envoy. The
 - [ext_proc vs. dynamic module](05-backends.md) helps you pick one.
 - [Benchmarks](06-benchmarks.md) has the measured latency, concurrency, and
   transform-cost numbers.
+- [Admin and observability](07-observability.md) covers the shape-only metrics,
+  decision header, explain dry-run, and the runtime directive plane.

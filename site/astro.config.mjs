@@ -77,6 +77,7 @@ export default defineConfig({
             { label: "Building the dynamic module", link: "/04-build-module/" },
             { label: "ext_proc vs. dynamic module", link: "/05-backends/" },
             { label: "Benchmarks", link: "/06-benchmarks/" },
+            { label: "Admin and observability", link: "/07-observability/" },
           ],
         },
       ],
