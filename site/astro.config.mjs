@@ -76,6 +76,7 @@ export default defineConfig({
             { label: "Building the ext_proc backend", link: "/03-build-extproc/" },
             { label: "Building the dynamic module", link: "/04-build-module/" },
             { label: "ext_proc vs. dynamic module", link: "/05-backends/" },
+            { label: "Benchmarks", link: "/06-benchmarks/" },
           ],
         },
       ],

@@ -83,18 +83,11 @@ them with `cargo test -p evoxy-extproc -- --ignored`.
 
 ## Release
 
-Pushing a `v*` tag runs the [Release](.github/workflows/release.yml) workflow,
-which bakes the dynamic module into a stock Envoy and publishes the image to
-`ghcr.io/huyz0/evoxy-envoy` (tagged with the version and `latest`). Envoy is never
-forked; the image only drops our `.so` into the upstream binary's search path. To
-run the module backend without building it yourself:
-
-```sh
-docker pull ghcr.io/huyz0/evoxy-envoy:latest
-```
-
-The ext_proc backend has no prebuilt image by design: it embeds your tenancy, so
-you build that small server yourself (see the [user guide](https://huyz0.github.io/envoy-osproxy/)).
+Pushing a `v*` tag runs the [Release](.github/workflows/release.yml) workflow, which
+publishes the reusable library crates to crates.io. There is no prebuilt binary or
+image: the dynamic module is a `.so` you build from your own tenancy (see
+[evoxy-module-sdk](crates/evoxy-module-sdk)), and the ext_proc backend is a small
+binary you build — both embed your tenancy, so there is nothing generic to ship.
 
 ## License
 

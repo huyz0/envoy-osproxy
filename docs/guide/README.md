@@ -63,3 +63,5 @@ Both are verified end to end through a stock, unmodified Envoy. The
 - [Building the ext_proc backend](03-build-extproc.md) and
   [Building the dynamic module](04-build-module.md) are the two deployment paths.
 - [ext_proc vs. dynamic module](05-backends.md) helps you pick one.
+- [Benchmarks](06-benchmarks.md) has the measured latency, concurrency, and
+  transform-cost numbers.
