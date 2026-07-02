@@ -16,8 +16,8 @@ a single entry point (`Pipeline::handle`). See
    │  stock Envoy │◄────────────────►│ envoy-osproxy (Rust)          │
    │  (unmodified)│  FilterRequest ⇄ │  evoxy-abi   → wire model      │
    └──────┬───────┘  FilterResponse  │  evoxy-adapter → RequestCtx    │
-          │ upstream cluster         │  osproxy-engine::Pipeline (reuse)│
-          ▼                          │  admin plane: /debug /admin    │
+          │ upstream cluster         │  osproxy tenancy+rewrite (reuse) │
+          ▼                          │  admin plane: /_evoxy/*        │
      OpenSearch                      └──────────────────────────────┘
 ```
 
@@ -35,10 +35,13 @@ a single entry point (`Pipeline::handle`). See
   `osproxy_spi::RequestCtx` the engine consumes. This is the whole port thesis in
   one function.
 
-- **reused osproxy engine** — pulled in by path dependency, unchanged. The adapter
-  hands it a `RequestCtx`; it returns a `PipelineResponse` the filter maps back to
-  a `FilterResponse` or an upstream forward. Reuse grows per milestone
-  ([roadmap](11-roadmap.md)); the transport/server crates are never reused.
+- **reused osproxy engine** — pulled from crates.io (`osproxy-tenancy`/`-rewrite`/
+  `-spi`/`-core`, pinned `=1.0.2`), unchanged, not vendored. The adapter hands it a
+  `RequestCtx`; `evoxy-route` resolves it through the tenancy `Router` and applies
+  the body transform, producing either the mutated request Envoy forwards or a
+  fail-closed `FilterResponse` (transform-then-forward, ADR-002). It never
+  dispatches. Reuse grows per milestone ([roadmap](11-roadmap.md)); the
+  transport/server crates are never reused.
 
 ## The extension seam: two backends, one adapter
 
@@ -55,7 +58,7 @@ The filter can plug into Envoy two ways (ADR-001), and both consume the same
 TLS/mTLS termination, HTTP/2, connection pooling, circuit breaking, retries, load
 balancing, access logs, base tracing span — all Envoy's now. What stays ours:
 tenancy/rewrite/migration/observability semantics, and the admin/introspection
-plane (`/debug/explain`, `/debug/breakglass`, `/admin/directives`, `/metrics`),
-which Envoy has no notion of and which we serve on our own port. FIPS for the wire
+plane (`/_evoxy/explain/<target>`, `/_evoxy/admin/directives`, `/_evoxy/metrics`),
+which Envoy has no notion of and which the backend answers on reserved paths. FIPS for the wire
 becomes Envoy-BoringSSL; our aws-lc-rs seam survives only for app-level HMAC. See
 [00-technical-analysis](00-technical-analysis.md) §5.

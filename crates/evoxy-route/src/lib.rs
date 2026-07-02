@@ -279,14 +279,12 @@ pub async fn resolve_cluster<R: Router + ?Sized>(
     router: &R,
     ctx: &RequestCtx<'_>,
 ) -> Result<String, FilterResponse> {
-    if !matches!(
-        ctx.endpoint(),
-        EndpointKind::IngestDoc
-            | EndpointKind::GetById
-            | EndpointKind::DeleteById
-            | EndpointKind::Search
-            | EndpointKind::Count
-    ) {
+    // The cluster is resolved from the partition (header/principal), so it is known
+    // for every endpoint [`prepare`] handles — including the cluster-level ones
+    // (`_bulk`/`_mget`/`_msearch`), which carry no index in the path but still
+    // resolve to one cluster. Keep this in lockstep with [`is_supported`] so a
+    // header-phase route decision never diverges from what the body phase forwards.
+    if !is_supported(ctx.endpoint()) {
         return Err(immediate(501, "endpoint_not_supported_yet"));
     }
     match router.resolve(ctx).await {

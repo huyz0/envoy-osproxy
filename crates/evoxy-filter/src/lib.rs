@@ -133,9 +133,12 @@ impl<R: Router> Filter<R> {
     /// The **header-phase routing** decision (M2c): resolve only the upstream
     /// cluster (from the request headers) and set it, so Envoy routes on
     /// `x-evoxy-cluster` before the body arrives. The body/path transform is
-    /// applied later by [`Filter::handle`] at the body phase. Used by backends
-    /// where the routing header must be set at the header phase to take effect
-    /// (both ext_proc's re-route and the dynamic module's header-only handle).
+    /// applied later by [`Filter::handle`] at the body phase. A building block for
+    /// a backend that routes by header at the header phase (multi-cluster ext_proc
+    /// re-routing, ADR-002/M2c). The shipped backends do not use it: the single
+    /// upstream reference tenancy routes statically, so both run the whole
+    /// transform through [`Filter::handle`] instead (see the ext_proc
+    /// `clear_route_cache: false` note in `evoxy-extproc`).
     pub async fn route_headers(
         &self,
         req: &FilterRequest,

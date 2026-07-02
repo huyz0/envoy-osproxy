@@ -63,9 +63,12 @@ immediate canned response. Envoy owns the socket; your service owns the
 semantics.
 
 - **Fit:** near-perfect. Our `ext_proc` server is a thin adapter that maps an
-  Envoy `ProcessingRequest` → `RequestCtx`, calls `Pipeline::handle`, and maps
-  `PipelineResponse` → `ProcessingResponse`. The osproxy engine crates are
-  reused *verbatim*, we already speak "headers + body in, response out."
+  Envoy `ProcessingRequest` → `RequestCtx`, resolves it through the reused engine,
+  and maps the result → `ProcessingResponse`. (ADR-002 later refined *how* the
+  engine is reused: `evoxy-route` drives the tenancy `Router` + `osproxy-rewrite`
+  to transform-then-forward, rather than calling `Pipeline::handle`'s dispatch
+  path.) The osproxy engine crates are reused *verbatim* from crates.io; we
+  already speak "headers + body in, response out."
 - **No rebuild:** `ext_proc` ships in the stock Envoy image; it is pure
   bootstrap config (`http_filters: - name: envoy.filters.http.ext_proc`).
 - **Process isolation:** our code crashing cannot take Envoy down; deploy/scale

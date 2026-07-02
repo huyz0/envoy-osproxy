@@ -135,6 +135,7 @@ a migration, the request is rejected and never forwarded.
 ## Observability, in the same model
 
 The introspection surfaces are served by the extension on Envoy's own port, so
-there is no second server to run: a `/metrics` endpoint, a `/debug/explain`
-dry-run, and a shape-only routing-decision response header. All of them carry only
+there is no second server to run: a `/_evoxy/metrics` endpoint, a
+`/_evoxy/explain/<target>` dry-run, and a shape-only routing-decision response
+header. All of them carry only
 counts, kinds, and flags, never tenant data.

@@ -662,6 +662,20 @@ async fn resolve_cluster_returns_target_cluster() {
 }
 
 #[tokio::test]
+async fn resolve_cluster_handles_cluster_level_endpoints() {
+    // A `_bulk` request carries no index in the path, but the cluster still
+    // resolves from the partition, so header-phase routing must not 501 it (it
+    // stays in lockstep with what `prepare` forwards at the body phase).
+    let req = request("POST", "/_bulk", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+
+    let cluster = crate::resolve_cluster(&router(dedicated_index(), None), &parts.ctx())
+        .await
+        .expect("a cluster for a cluster-level endpoint");
+    assert_eq!(cluster, "eu-1");
+}
+
+#[tokio::test]
 async fn resolve_cluster_fails_closed_on_unresolved_partition() {
     let req = request("PUT", "/orders/_doc/42", None, b"{}");
     let parts = RequestParts::from_filter(&req, "r").unwrap();

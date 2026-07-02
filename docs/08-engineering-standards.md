@@ -31,6 +31,7 @@ in the same commit as the code they describe, drift is a bug.
 
 ## Reuse discipline
 
-The osproxy engine crates are reused by **path dependency**, unchanged. If a port
+The osproxy engine crates are reused **from crates.io** (pinned `=1.0.2`),
+unchanged, not vendored. If a port
 needs an engine change, make it in osproxy (with its own gate) and pull it
 through, never fork engine logic here. This repo owns only the Envoy seam.
