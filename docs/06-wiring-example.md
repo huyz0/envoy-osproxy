@@ -16,9 +16,10 @@ example. You do **not** write a `main`, a `Sink`, an upstream client, or any TLS
 Envoy is the app and forwards upstream (ADR-002).
 
 **2. An artifact**, one of:
-- a **dynamic-module `.so`** (in-process, lowest latency), `evoxy-module` is
-  generic over your router, so you wire your tenancy into its factory and build
-  (`cargo xtask module-image`);
+- a **dynamic-module `.so`** (in-process, lowest latency), a small `cdylib` that
+  depends on `evoxy-module-sdk` and calls `register!` once with your tenancy factory
+  (see [`examples/custom-module`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/custom-module));
+  build with `cargo build --release`, or `cargo xtask module-image` for the reference;
 - an **ext_proc gRPC server** (out-of-process, isolated), a small `tonic`/`tokio`
   binary serving `evoxy_extproc::ExtProcService`, generic over your tenancy just
   like the module (see `examples/README.md`).

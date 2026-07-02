@@ -1,5 +1,8 @@
 target/
 **/*.rs.bk
-# The excluded evoxy-module builds standalone; its lock is host/feature-specific.
+# The excluded module crates + the custom-module example build standalone; their
+# locks are host/SDK-specific (a git-pinned Envoy SDK), so they are not tracked.
 crates/evoxy-module/Cargo.lock
+crates/evoxy-module-sdk/Cargo.lock
+examples/custom-module/Cargo.lock
 

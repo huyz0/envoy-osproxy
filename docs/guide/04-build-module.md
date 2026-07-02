@@ -33,28 +33,57 @@ This produces `evoxy-envoy:v1.37.0`: an unmodified `envoyproxy/envoy:v1.37.0` wi
 `libevoxy_module.so` dropped into its dynamic-modules search path. No fork, no
 rebuild of Envoy.
 
-## Wiring your tenancy
+## Building your own module
 
-The module crate is your build template. The reference tenancy is the default; to
-run your own, build it in the factory in
-[`crates/evoxy-module/src/sdk.rs`](https://github.com/huyz0/envoy-osproxy/tree/main/crates/evoxy-module/src/sdk.rs).
-Replace the default module construction with your tenancy:
+You do not edit our source. Your module is its own small `cdylib` crate: depend on
+`evoxy-module-sdk`, and call `register!` once with a factory that turns Envoy's
+`filter_config` blob into your router. That is the whole `src/lib.rs`:
 
 ```rust
 use custom_tenancy::TieredTenancy;
 use osproxy_tenancy::TenancyRouter;
 
-let tenancy = TieredTenancy {
-    partition_header: "x-tenant".to_owned(),
-    cluster: "opensearch".to_owned(),
-    premium: ["acme".to_owned()].into_iter().collect(),
-};
-let module = Module::new(TenancyRouter::new(tenancy), runtime.handle().clone());
+evoxy_module_sdk::register!(|config: &str| {
+    // Parse whatever your tenancy needs from Envoy's filter_config blob.
+    let _ = config;
+    TenancyRouter::new(TieredTenancy {
+        partition_header: "x-tenant".to_owned(),
+        cluster: "opensearch".to_owned(),
+        premium: ["acme".to_owned()].into_iter().collect(),
+    })
+});
 ```
 
-`Module` is generic over the router, so the request and response transform work the
-same for any tenancy. Rebuild the image after any change; the tenancy is compiled
-into the `.so`, not loaded at runtime.
+The macro generates Envoy's module entry point and wires your factory in; the SDK
+binding is generic over any tenancy, so the request and response transform work the
+same. Your `Cargo.toml` is a `cdylib` with three dependencies:
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+evoxy-module-sdk = { git = "https://github.com/huyz0/envoy-osproxy", tag = "v0.1.0" }
+custom-tenancy = { path = "../custom-tenancy" }  # your TenancySpi crate
+osproxy-tenancy = "=1.0.2"
+
+[profile.release]
+panic = "abort"   # a module panic must not unwind into an Envoy worker
+```
+
+Then `cargo build --release` produces your `.so`. The Envoy SDK is pulled in
+transitively, so your crate never names it, and no cargo feature flag is needed.
+
+`evoxy-module-sdk` is a **git** dependency, not a crates.io one: it links the Envoy
+dynamic-modules SDK, which lives in the `envoyproxy/envoy` git tree, and crates.io
+forbids git dependencies at publish time. That never affects you, because you build
+and deploy a `.so` and never publish it. A complete, compiling version is
+[`examples/custom-module`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/custom-module);
+bake it into a stock Envoy the same way the reference module does (the Dockerfile
+just names a different `.so`).
+
+The tenancy is compiled into the `.so`, not loaded at runtime, so rebuild after any
+change.
 
 ## Configuring Envoy
 

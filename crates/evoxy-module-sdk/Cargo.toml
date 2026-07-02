@@ -1,0 +1,25 @@
+[package]
+name = "evoxy-module-sdk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+description = "Build an Envoy dynamic module over the evoxy brain: the register! macro + SDK glue, generic over any tenancy. Links the upstream Envoy dynamic-modules SDK (git), so it needs libclang and is not on crates.io — depend on it by git for your own (unpublished) module cdylib."
+
+[dependencies]
+evoxy-abi = { path = "../evoxy-abi" }
+evoxy-filter = { path = "../evoxy-filter" }
+osproxy-tenancy = "=1.0.2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+
+# The OFFICIAL upstream Envoy dynamic-modules Rust SDK — the crate lives IN the
+# envoyproxy/envoy tree, so we pin it to the exact Envoy release tag. Envoy checks
+# the ABI-header hash at load, so the SDK tag MUST equal the Envoy image tag — a
+# bump is a deliberate, host-verified, paired event (SDK tag ⇔ envoyproxy/envoy:<tag>).
+# Pulls `bindgen` (needs libclang). Because this crate is never published, a git
+# dependency is fine (crates.io only rejects git deps at publish).
+envoy-proxy-dynamic-modules-rust-sdk = { git = "https://github.com/envoyproxy/envoy", tag = "v1.37.0" }
+
+# NOTE: not a workspace member (see the root Cargo.toml `exclude`): it needs
+# libclang + the Envoy SDK, so the gate never builds it.

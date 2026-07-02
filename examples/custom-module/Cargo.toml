@@ -1,0 +1,29 @@
+[package]
+name = "custom-module"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+description = "Example: a custom-tenancy Envoy dynamic module — the whole cdylib is one evoxy_module::register! call."
+
+# The `.so` Envoy loads. Build with `cargo build --release` on a host with clang +
+# libclang (the SDK binds Envoy's C ABI via bindgen).
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# In your own project this is a GIT dependency (evoxy-module-sdk is not on
+# crates.io — it links the Envoy SDK, a git dep, which crates.io forbids). Building
+# a module is fine either way; only *publishing* rejects git deps, and you never
+# publish a `.so`.
+#   evoxy-module-sdk = { git = "https://github.com/huyz0/envoy-osproxy", tag = "v0.1.0" }
+# In-repo we use a path so the example tracks local changes.
+evoxy-module-sdk = { path = "../../crates/evoxy-module-sdk" }
+# Your tenancy is an ordinary crate that only depends on the published osproxy SPI.
+custom-tenancy = { path = "../custom-tenancy" }
+osproxy-tenancy = "=1.0.2"
+
+# A dynamic-module panic must not unwind across the C ABI into an Envoy worker.
+[profile.release]
+panic = "abort"

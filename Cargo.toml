@@ -18,7 +18,11 @@ members = [
 # own with `cargo build` from its directory, on a host with those prerequisites —
 # exactly like osproxy's excluded `osproxy-kafka-rdkafka`.
 exclude = [
+    # The reusable SDK glue (links the Envoy SDK) and the reference cdylib over it.
+    "crates/evoxy-module-sdk",
     "crates/evoxy-module",
+    # A custom-tenancy module cdylib built on the same glue — same libclang need.
+    "examples/custom-module",
 ]
 
 [workspace.package]

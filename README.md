@@ -61,7 +61,8 @@ through all three steps.
 | [crates/evoxy-route](crates/evoxy-route) | Transform-then-forward routing |
 | [crates/evoxy-filter](crates/evoxy-filter) | The SDK-agnostic filter brain |
 | [crates/evoxy-extproc](crates/evoxy-extproc) | The ext_proc gRPC backend |
-| [crates/evoxy-module](crates/evoxy-module) | The dynamic-module cdylib (workspace-excluded) |
+| [crates/evoxy-module-sdk](crates/evoxy-module-sdk) | Build your own module: the `register!` macro + SDK glue (workspace-excluded) |
+| [crates/evoxy-module](crates/evoxy-module) | The reference dynamic-module cdylib (workspace-excluded) |
 | [crates/evoxy-bridge](crates/evoxy-bridge) | The async fan-out sink |
 | [crates/evoxy-bench](crates/evoxy-bench) | Benchmark math (dev-only) |
 | [examples/](examples) | A compiling custom tenancy and Envoy configs for both backends |

@@ -25,7 +25,7 @@ jobs:
         run: cargo xtask ci
 
   module-build:
-    name: dynamic module cdylib (--features sdk)
+    name: dynamic module cdylib + custom-module example
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,11 +33,15 @@ jobs:
       # bindgen (via the Envoy SDK) needs libclang.
       - name: install clang
         run: sudo apt-get update && sudo apt-get install -y clang
-      # The workspace-excluded cdylib is not built by the gate; prove it still
-      # compiles against the pinned upstream SDK (the ABI-bound `.so`).
-      - name: build the module
-        run: cargo build --release --features sdk
+      # The workspace-excluded cdylibs are not built by the gate; prove both the
+      # reference `.so` and a custom-tenancy module (the user path) still compile
+      # against the pinned upstream SDK.
+      - name: build the reference module
+        run: cargo build --release
         working-directory: crates/evoxy-module
+      - name: build the custom-module example
+        run: cargo build --release
+        working-directory: examples/custom-module
 
   integration:
     name: live tests through real Envoy + OpenSearch (Docker)

@@ -39,10 +39,10 @@ and issues effects through an `EnvoyActions` abstraction (`ContinueUpstream` /
 `StoppedWithLocalReply`), plus the `ReferenceTenancy` default and `FilterConfig`.
 4 fake-`EnvoyActions` tests assert write-mutation+continue and the fail-closed
 local replies, no Envoy needed. **(1b-module) `evoxy-module`, done
-(workspace-excluded, ADR-004).** The pure driver (`Module`/`on_request`) compiles
-standalone; the SDK binding (`src/sdk.rs`, `--features sdk`) implements the SDK's
-`HttpFilter`/`HttpFilterInstance` over the brain via an owned `SdkActions` recorder
-and `init!` registration. **Verified building `libevoxy_module.so`**, exports the
+(workspace-excluded, ADR-004).** The reusable glue lives in `evoxy-module-sdk`
+(the `register!` macro + SDK binding, generic over any tenancy); `evoxy-module` is
+the reference cdylib, one `register!` over it. The binding implements the SDK's
+`HttpFilter`/`HttpFilterConfig` over the brain via an owned `SdkActions` recorder. **Verified building `libevoxy_module.so`**, exports the
 full `envoy_dynamic_module_event_*` ABI (a loadable module). SDK-0.1.x limits
 routing/header rewrites to the header phase (M2), like ext_proc; the reference
 default (static route) needs only body + fail-closed reply, which it does. Remaining:

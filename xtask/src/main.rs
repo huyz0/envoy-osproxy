@@ -43,7 +43,7 @@ const USAGE: &str =
     "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench|crypto-free|module-image>";
 
 /// The stock-Envoy image tag we build the module into. Kept equal to the SDK tag
-/// pinned in `evoxy-module/Cargo.toml` (the ABI hash is load-checked).
+/// pinned in `evoxy-module-sdk/Cargo.toml` (the ABI hash is load-checked).
 const MODULE_IMAGE: &str = "evoxy-envoy:v1.37.0";
 
 fn run_ci() -> Result<(), String> {

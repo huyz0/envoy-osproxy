@@ -20,9 +20,10 @@ WORKDIR /src
 COPY . .
 
 WORKDIR /src/crates/evoxy-module
-# `--features sdk` pulls the upstream SDK (git dep) and binds Envoy's C ABI via
-# bindgen (clang). Release profile is `panic = "abort"` (no unwind across the ABI).
-RUN cargo build --release --features sdk
+# Builds the reference cdylib over `evoxy-module-sdk`, which pulls the upstream SDK
+# (git dep) and binds Envoy's C ABI via bindgen (clang). Release profile is
+# `panic = "abort"` (no unwind across the ABI).
+RUN cargo build --release
 
 # Stock upstream Envoy, unmodified.
 FROM envoyproxy/envoy:v1.37.0
