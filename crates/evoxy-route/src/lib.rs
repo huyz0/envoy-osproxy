@@ -102,15 +102,38 @@ pub struct PreparedForward {
 }
 
 /// The `host:port` authority of an endpoint URL, for the request `:authority`.
-/// `http://eu-1.internal:9200/` → `eu-1.internal:9200`. Scheme and any path are
-/// dropped; a bare `host:port` is returned as-is.
+/// `http://eu-1.internal:9200/` → `eu-1.internal:9200`. The path is dropped. When
+/// the URL names no explicit port, the scheme's default is filled in
+/// (`https` → 443, `http` → 80) so a bare `https://alb.example.com` dials 443 rather
+/// than silently falling back to 80 — the common case behind an HTTPS load balancer.
+/// A bare `host:port` with no scheme is returned unchanged.
 #[must_use]
 pub fn authority_of(endpoint: &str) -> Option<String> {
-    let after_scheme = endpoint
-        .split_once("://")
-        .map_or(endpoint, |(_, rest)| rest);
-    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    (!authority.is_empty()).then(|| authority.to_owned())
+    let (scheme, rest) = match endpoint.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, endpoint),
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return None;
+    }
+    // Does the authority already carry a port? (Handle a bracketed IPv6 literal —
+    // its colons are part of the host, and the port, if any, follows the `]`.)
+    let has_port = match authority.strip_prefix('[') {
+        Some(after_bracket) => after_bracket
+            .split_once(']')
+            .is_some_and(|(_, tail)| tail.starts_with(':')),
+        None => authority.contains(':'),
+    };
+    if has_port {
+        return Some(authority.to_owned());
+    }
+    match scheme {
+        Some("https") => Some(format!("{authority}:443")),
+        Some("http") => Some(format!("{authority}:80")),
+        // No scheme to infer a default from: pass the bare host through.
+        _ => Some(authority.to_owned()),
+    }
 }
 
 /// Errors from applying the body transform. Kept separate from [`SpiError`] so

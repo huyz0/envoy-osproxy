@@ -677,6 +677,39 @@ fn authority_of_strips_scheme_and_path() {
     assert_eq!(authority_of("http://"), None);
 }
 
+#[test]
+fn authority_of_infers_the_scheme_default_port() {
+    use crate::authority_of;
+    // No explicit port: the scheme's default is filled in (the HTTPS-ALB case).
+    assert_eq!(
+        authority_of("https://alb.example.com"),
+        Some("alb.example.com:443".to_owned())
+    );
+    assert_eq!(
+        authority_of("http://plain.local/orders"),
+        Some("plain.local:80".to_owned())
+    );
+    // An explicit port always wins over the scheme default.
+    assert_eq!(
+        authority_of("https://alb.example.com:8443"),
+        Some("alb.example.com:8443".to_owned())
+    );
+    // No scheme, no port: pass the bare host through (nothing to infer from).
+    assert_eq!(
+        authority_of("alb.example.com"),
+        Some("alb.example.com".to_owned())
+    );
+    // A bracketed IPv6 literal without a port is not mistaken for host:port.
+    assert_eq!(
+        authority_of("https://[2001:db8::1]"),
+        Some("[2001:db8::1]:443".to_owned())
+    );
+    assert_eq!(
+        authority_of("http://[2001:db8::1]:9200"),
+        Some("[2001:db8::1]:9200".to_owned())
+    );
+}
+
 #[tokio::test]
 async fn resolve_cluster_handles_cluster_level_endpoints() {
     // A `_bulk` request carries no index in the path, but the cluster still

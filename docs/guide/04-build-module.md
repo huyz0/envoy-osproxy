@@ -158,6 +158,19 @@ versus named clusters is one shared upstream TLS/health/pool config for all dial
 hosts; for a fleet of OpenSearch clusters behind one CA that is usually fine. For a
 changing set of clusters each with distinct upstream config, pair this with CDS.
 
+### HTTPS upstreams (e.g. AWS ALBs)
+
+HTTPS upstreams are the ideal case, not a limitation: return an `https://…` endpoint
+and Envoy dials it over TLS. Because SNI and certificate-hostname validation follow
+the per-request host (`auto_sni` + `auto_san_validation`), one cluster serves any
+number of HTTPS hosts, and since ALBs all chain to public CAs a single trust store
+validates every one. Return `https://host:443` (the module fills in `:443` for an
+`https` URL with no port); point the cluster's `trusted_ca` at the image's CA bundle
+(or your private CA). The ready config is
+[`examples/envoy/dynamic-forward-proxy-tls.yaml`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/envoy/dynamic-forward-proxy-tls.yaml).
+This only falls short if each tenant's upstream uses a *distinct private* CA — then
+give each its own cluster (static or via CDS/SDS).
+
 ## Verifying it
 
 The end-to-end test loads the built image and drives real traffic through it,

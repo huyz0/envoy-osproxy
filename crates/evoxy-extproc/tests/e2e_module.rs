@@ -3,11 +3,12 @@
 //! `.so` into a STOCK `envoyproxy/envoy:v1.37.0` (no fork, no rebuild) and drives
 //! real requests through it into a real OpenSearch.
 //!
-//! Four tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
-//! first with `cargo xtask module-image`, then run with `--ignored`). The last two
-//! prove per-tenant upstream routing: `per_tenant_cluster_...` via header-matched
-//! clusters, `dynamic_forward_proxy_...` via the tenancy's endpoint dialed with no
-//! cluster defined.
+//! Five tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
+//! first with `cargo xtask module-image`, then run with `--ignored`). The last
+//! three prove per-tenant upstream routing: `per_tenant_cluster_...` via header-
+//! matched clusters, `dynamic_forward_proxy_dials_the_tenancy_endpoint` via the
+//! tenancy's endpoint dialed with no cluster defined, and
+//! `dynamic_forward_proxy_dials_an_https_upstream` over TLS (the AWS-ALB shape).
 //! - `write_then_read_through_module` — dedicated mode; a write and a read flow
 //!   through the in-process module and round-trip.
 //! - `shared_index_isolates_tenants_through_module` — shared-index mode; two
@@ -27,6 +28,7 @@
 
 use std::time::Duration;
 
+use rcgen::{CertificateParams, DnType, KeyPair};
 use serde_json::{json, Value};
 use testcontainers::core::{ContainerPort, Host, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -203,6 +205,103 @@ static_resources:
     TEMPLATE
         .replace("FILTER_CONFIG", filter_config)
         .into_bytes()
+}
+
+/// A dynamic-forward-proxy bootstrap that dials the upstream over **TLS**, trusting
+/// `/ca.pem` and taking SNI + cert-hostname validation from the request host
+/// (`auto_sni` / `auto_san_validation`) — the AWS-ALB (HTTPS) shape. Same single
+/// cluster for any HTTPS host.
+fn envoy_bootstrap_dfp_tls(filter_config: &str) -> Vec<u8> {
+    const TEMPLATE: &str = r#"
+admin: { address: { socket_address: { address: 0.0.0.0, port_value: 9901 } } }
+static_resources:
+  listeners:
+  - name: main
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress
+          route_config:
+            name: local
+            virtual_hosts:
+            - name: all
+              domains: ["*"]
+              routes: [{ match: { prefix: "/" }, route: { cluster: dfp } }]
+          http_filters:
+          - name: envoy.filters.http.dynamic_modules
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+              dynamic_module_config: { name: evoxy_module }
+              filter_name: evoxy
+              filter_config:
+                "@type": type.googleapis.com/google.protobuf.StringValue
+                value: 'FILTER_CONFIG'
+          - name: envoy.filters.http.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+              dns_cache_config: { name: evoxy_dns, dns_lookup_family: V4_ONLY }
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: dfp
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config: { name: evoxy_dns, dns_lookup_family: V4_ONLY }
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        upstream_http_protocol_options: { auto_sni: true, auto_san_validation: true }
+        explicit_http_config: { http_protocol_options: {} }
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca: { filename: /ca.pem }
+"#;
+    TEMPLATE
+        .replace("FILTER_CONFIG", filter_config)
+        .into_bytes()
+}
+
+/// PEM for a TLS-terminating upstream valid for `host.docker.internal`: the CA (what
+/// Envoy trusts), the server chain (leaf + CA, what the terminator presents), and the
+/// server key. Generated at runtime, so no secret is committed.
+struct UpstreamPki {
+    ca_pem: String,
+    chain_pem: String,
+    key_pem: String,
+}
+
+fn generate_upstream_pki() -> UpstreamPki {
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "evoxy-upstream-ca");
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+    // The SAN must match the request host Envoy validates against (auto_san_validation).
+    let server_key = KeyPair::generate().unwrap();
+    let server_params = CertificateParams::new(vec!["host.docker.internal".to_owned()]).unwrap();
+    let server_cert = server_params
+        .signed_by(&server_key, &ca_cert, &ca_key)
+        .unwrap();
+
+    UpstreamPki {
+        ca_pem: ca_cert.pem(),
+        chain_pem: format!("{}{}", server_cert.pem(), ca_cert.pem()),
+        key_pem: server_key.serialize_pem(),
+    }
 }
 
 async fn start_opensearch() -> ContainerAsync<GenericImage> {
@@ -512,6 +611,90 @@ async fn dynamic_forward_proxy_dials_the_tenancy_endpoint() {
     assert!(
         !doc_found(&http, port_a, "2").await,
         "globex not on endpoint A"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker + the evoxy-envoy image; run with --ignored"]
+async fn dynamic_forward_proxy_dials_an_https_upstream() {
+    // The AWS-ALB shape: the tenancy returns an https:// endpoint and Envoy dials it
+    // over TLS via dynamic_forward_proxy, taking SNI + cert validation from the host.
+    // A ghostunnel TLS terminator (serving a runtime cert for host.docker.internal)
+    // fronts a real OpenSearch; Envoy trusts the generated CA. No cluster is defined
+    // for the upstream.
+    let opensearch = start_opensearch().await;
+    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+    let pki = generate_upstream_pki();
+
+    let terminator = GenericImage::new("ghostunnel/ghostunnel", "v1.8.2")
+        .with_exposed_port(ContainerPort::Tcp(8443))
+        .with_wait_for(WaitFor::message_on_stdout("listening for connections"))
+        .with_host("host.docker.internal", Host::HostGateway)
+        .with_copy_to("/server.pem", pki.chain_pem.into_bytes())
+        .with_copy_to("/server-key.pem", pki.key_pem.into_bytes())
+        .with_cmd([
+            "server".to_owned(),
+            "--listen".to_owned(),
+            "0.0.0.0:8443".to_owned(),
+            "--target".to_owned(),
+            format!("host.docker.internal:{os_port}"),
+            // The target is the host gateway, not localhost (a test harness detail).
+            "--unsafe-target".to_owned(),
+            "--cert".to_owned(),
+            "/server.pem".to_owned(),
+            "--key".to_owned(),
+            "/server-key.pem".to_owned(),
+            "--disable-authentication".to_owned(),
+        ])
+        .start()
+        .await
+        .expect("ghostunnel TLS terminator starts");
+    let tls_port = terminator.get_host_port_ipv4(8443).await.unwrap();
+
+    // The tenancy points acme at the HTTPS terminator (no port → the module fills 443,
+    // but here the terminator is on a mapped port, so name it explicitly).
+    let config = format!(
+        r#"{{"partition_header":"x-tenant","endpoint_by_partition":{{"acme":"https://host.docker.internal:{tls_port}"}}}}"#
+    );
+    let envoy = GenericImage::new(IMAGE, IMAGE_TAG)
+        .with_exposed_port(ContainerPort::Tcp(10000))
+        .with_wait_for(WaitFor::message_on_stderr("starting main dispatch loop"))
+        .with_host("host.docker.internal", Host::HostGateway)
+        .with_copy_to("/ca.pem", pki.ca_pem.into_bytes())
+        .with_copy_to("/etc/envoy/envoy.yaml", envoy_bootstrap_dfp_tls(&config))
+        .with_startup_timeout(Duration::from_secs(60))
+        .start()
+        .await
+        .expect("evoxy-envoy starts (build it first: cargo xtask module-image)");
+    let base = format!(
+        "http://127.0.0.1:{}",
+        envoy.get_host_port_ipv4(10000).await.unwrap()
+    );
+    let http = reqwest::Client::new();
+
+    // Write through the module → TLS to the terminator → OpenSearch.
+    let put = http
+        .put(format!("{base}/orders/_doc/1"))
+        .header("x-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(r#"{"who":"tls"}"#)
+        .send()
+        .await
+        .expect("PUT through module over TLS");
+    let status = put.status();
+    let ok = status.is_success();
+    let body = put.text().await.unwrap_or_default();
+    let logs = if ok {
+        String::new()
+    } else {
+        String::from_utf8(envoy.stderr_to_vec().await.unwrap_or_default()).unwrap_or_default()
+    };
+    assert!(ok, "write over TLS {status}: {body}\n--- envoy ---\n{logs}");
+
+    // It reached OpenSearch through the TLS hop.
+    assert!(
+        doc_found(&http, os_port, "1").await,
+        "doc written over the HTTPS upstream"
     );
 }
 

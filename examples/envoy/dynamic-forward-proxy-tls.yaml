@@ -1,0 +1,84 @@
+# Example Envoy bootstrap — DYNAMIC FORWARD PROXY to HTTPS upstreams (AWS ALBs).
+#
+# Same idea as dynamic-forward-proxy.yaml, but the upstreams are HTTPS (e.g. AWS
+# Application Load Balancers). The tenancy returns an `https://…` endpoint, the
+# module sets it as `:authority`, and Envoy's dynamic_forward_proxy dials it over
+# TLS — SNI and certificate-hostname validation follow the per-request host, so ONE
+# cluster serves any number of HTTPS hosts. This is the sweet spot for ALBs: they
+# all chain to public CAs, so a single trust store validates every one.
+#
+# Return `https://host:443` from the SPI (the module fills in :443 for an https URL
+# with no explicit port). No cluster is defined per ALB; add a tenant by returning
+# its endpoint.
+static_resources:
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: dynamic_forward_proxy }
+                http_filters:
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config: { name: evoxy_module }
+                      filter_name: evoxy
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: |
+                          {
+                            "partition_header": "x-tenant",
+                            "endpoint_by_partition": {
+                              "acme": "https://acme-alb.eu-west-1.elb.amazonaws.com:443",
+                              "globex": "https://globex-alb.us-east-1.elb.amazonaws.com:443"
+                            }
+                          }
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      dns_cache_config:
+                        name: evoxy_dns_cache
+                        dns_lookup_family: V4_ONLY
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: dynamic_forward_proxy
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          dns_cache_config:
+            name: evoxy_dns_cache
+            dns_lookup_family: V4_ONLY
+      # SNI and cert-hostname validation follow the request host, so one cluster
+      # serves any HTTPS host. This is what makes per-tenant ALBs work.
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          upstream_http_protocol_options:
+            auto_sni: true
+            auto_san_validation: true
+          explicit_http_config:
+            http_protocol_options: {}
+      # Trust public CAs (ALB/ACM certs chain to them). Point trusted_ca at the
+      # image's CA bundle; swap in your private CA if the upstreams use one.
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            validation_context:
+              trusted_ca:
+                filename: /etc/ssl/certs/ca-certificates.crt
