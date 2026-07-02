@@ -252,6 +252,7 @@ struct SdkActions {
     method: Option<String>,
     path: Option<String>,
     cluster: Option<String>,
+    host: Option<String>,
     body: Option<Vec<u8>>,
     set_headers: Vec<(String, String)>,
     remove_headers: Vec<String>,
@@ -278,6 +279,12 @@ impl SdkActions {
         }
         if let Some(path) = self.path {
             envoy.set_request_header(":path", path.as_bytes());
+        }
+        // The upstream host (from the placement endpoint): set it as the authority
+        // so Envoy's dynamic-forward-proxy dials it. Harmless when the route targets
+        // a normal cluster (the authority is not used for upstream selection there).
+        if let Some(host) = self.host {
+            envoy.set_request_header(":authority", host.as_bytes());
         }
         for (name, value) in self.set_headers {
             envoy.set_request_header(&name, value.as_bytes());
@@ -319,6 +326,9 @@ impl EnvoyActions for SdkActions {
     // per-request clusters and header-matched routes it selects the upstream.
     fn set_upstream_cluster(&mut self, cluster: &str) {
         self.cluster = Some(cluster.to_owned());
+    }
+    fn set_upstream_host(&mut self, host: &str) {
+        self.host = Some(host.to_owned());
     }
     fn set_method(&mut self, method: &str) {
         self.method = Some(method.to_owned());

@@ -33,6 +33,7 @@ impl EnvoyActions for NoopActions {
     fn set_upstream_cluster(&mut self, _cluster: &str) {
         self.routed = true;
     }
+    fn set_upstream_host(&mut self, _host: &str) {}
     fn set_method(&mut self, _method: &str) {}
     fn set_path(&mut self, _path: &str) {}
     fn set_body(&mut self, _body: &[u8]) {}

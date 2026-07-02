@@ -11,6 +11,7 @@ use crate::{EnvoyActions, Filter, FilterDecision, ReferenceTenancy};
 #[derive(Default)]
 struct FakeActions {
     cluster: Option<String>,
+    host: Option<String>,
     method: Option<String>,
     path: Option<String>,
     body: Option<Vec<u8>>,
@@ -22,6 +23,9 @@ struct FakeActions {
 impl EnvoyActions for FakeActions {
     fn set_upstream_cluster(&mut self, cluster: &str) {
         self.cluster = Some(cluster.to_owned());
+    }
+    fn set_upstream_host(&mut self, host: &str) {
+        self.host = Some(host.to_owned());
     }
     fn set_method(&mut self, method: &str) {
         self.method = Some(method.to_owned());
@@ -79,6 +83,8 @@ async fn write_is_mutated_and_continued_upstream() {
 
     assert_eq!(decision, FilterDecision::ContinueUpstream);
     assert_eq!(actions.cluster.as_deref(), Some("opensearch"));
+    // The placement endpoint's authority, for dynamic-forward-proxy routing.
+    assert_eq!(actions.host.as_deref(), Some("os:9200"));
     assert_eq!(actions.method.as_deref(), Some("PUT"));
     // DedicatedCluster keeps the logical index and the client id.
     assert_eq!(actions.path.as_deref(), Some("/orders/_doc/42"));

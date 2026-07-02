@@ -32,6 +32,7 @@ pub(crate) struct ExtProcActions {
     method: Option<String>,
     path: Option<String>,
     cluster: Option<String>,
+    host: Option<String>,
     extra_headers: Vec<HeaderValueOption>,
     remove_headers: Vec<String>,
     body: Option<Vec<u8>>,
@@ -77,6 +78,11 @@ impl ExtProcActions {
         if let Some(cluster) = self.cluster.as_deref() {
             set_headers.push(overwrite(CLUSTER_HEADER, cluster));
         }
+        // Upstream host from the placement endpoint → `:authority`, for Envoy's
+        // dynamic-forward-proxy. Unused when the route targets a normal cluster.
+        if let Some(host) = self.host.as_deref() {
+            set_headers.push(overwrite(":authority", host));
+        }
         let body_mutation = self.body.map(|body| BodyMutation {
             mutation: Some(body_mutation::Mutation::Body(body)),
         });
@@ -112,6 +118,9 @@ impl ExtProcActions {
 impl EnvoyActions for ExtProcActions {
     fn set_upstream_cluster(&mut self, cluster: &str) {
         self.cluster = Some(cluster.to_owned());
+    }
+    fn set_upstream_host(&mut self, host: &str) {
+        self.host = Some(host.to_owned());
     }
     fn set_method(&mut self, method: &str) {
         self.method = Some(method.to_owned());

@@ -1,0 +1,72 @@
+# Example Envoy bootstrap — DYNAMIC MODULE backend, DYNAMIC FORWARD PROXY.
+#
+# The osproxy-parity model: your tenancy returns the upstream ENDPOINT (via
+# `placement_for(...).with_endpoint(...)`), the module sets it as the request
+# `:authority`, and Envoy's built-in dynamic_forward_proxy DIALS that host on
+# demand — no cluster defined per upstream, no CDS, no control plane. Add a tenant
+# by returning its endpoint from the SPI; nothing in the Envoy config changes.
+#
+# Still a stock envoyproxy/envoy — dynamic_forward_proxy is a built-in filter +
+# cluster, so this is config, not a fork.
+#
+# Filter order matters: the evoxy module runs FIRST (it rewrites `:authority` to the
+# tenancy's endpoint), THEN dynamic_forward_proxy reads that authority and resolves
+# the upstream. This example drives it with the reference tenancy and an
+# `endpoint_by_partition` map; a custom tenancy just returns the endpoint.
+static_resources:
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      # One static route: every request goes to the dynamic-forward-
+                      # proxy cluster, which dials whatever host the :authority names.
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: dynamic_forward_proxy }
+                http_filters:
+                  # 1. The evoxy module rewrites :authority to the tenancy's endpoint.
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config: { name: evoxy_module }
+                      filter_name: evoxy
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: |
+                          {
+                            "partition_header": "x-tenant",
+                            "endpoint_by_partition": {
+                              "acme": "http://opensearch-a.internal:9200",
+                              "globex": "http://opensearch-b.internal:9200"
+                            }
+                          }
+                  # 2. The built-in dynamic forward proxy resolves + dials that host.
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      dns_cache_config:
+                        name: evoxy_dns_cache
+                        dns_lookup_family: V4_ONLY
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    # No per-upstream clusters. This one cluster dials any host the DNS cache holds.
+    - name: dynamic_forward_proxy
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          dns_cache_config:
+            name: evoxy_dns_cache
+            dns_lookup_family: V4_ONLY

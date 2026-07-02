@@ -661,6 +661,22 @@ async fn resolve_cluster_returns_target_cluster() {
     assert_eq!(cluster, "eu-1");
 }
 
+#[test]
+fn authority_of_strips_scheme_and_path() {
+    use crate::authority_of;
+    assert_eq!(
+        authority_of("http://eu-1.internal:9200"),
+        Some("eu-1.internal:9200".to_owned())
+    );
+    assert_eq!(
+        authority_of("https://os.local:9200/orders"),
+        Some("os.local:9200".to_owned())
+    );
+    assert_eq!(authority_of("host:9200"), Some("host:9200".to_owned()));
+    assert_eq!(authority_of(""), None);
+    assert_eq!(authority_of("http://"), None);
+}
+
 #[tokio::test]
 async fn resolve_cluster_handles_cluster_level_endpoints() {
     // A `_bulk` request carries no index in the path, but the cluster still

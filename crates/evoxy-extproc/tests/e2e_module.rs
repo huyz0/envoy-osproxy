@@ -3,8 +3,11 @@
 //! `.so` into a STOCK `envoyproxy/envoy:v1.37.0` (no fork, no rebuild) and drives
 //! real requests through it into a real OpenSearch.
 //!
-//! Three tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
-//! first with `cargo xtask module-image`, then run with `--ignored`):
+//! Four tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
+//! first with `cargo xtask module-image`, then run with `--ignored`). The last two
+//! prove per-tenant upstream routing: `per_tenant_cluster_...` via header-matched
+//! clusters, `dynamic_forward_proxy_...` via the tenancy's endpoint dialed with no
+//! cluster defined.
 //! - `write_then_read_through_module` — dedicated mode; a write and a read flow
 //!   through the in-process module and round-trip.
 //! - `shared_index_isolates_tenants_through_module` — shared-index mode; two
@@ -145,6 +148,59 @@ static_resources:
     TEMPLATE
         .replace("PORT_A", &port_a.to_string())
         .replace("PORT_B", &port_b.to_string())
+        .replace("FILTER_CONFIG", filter_config)
+        .into_bytes()
+}
+
+/// A dynamic-forward-proxy Envoy bootstrap: NO per-upstream clusters. The module
+/// rewrites `:authority` to the tenancy's endpoint (`endpoint_by_partition`), and
+/// the built-in `dynamic_forward_proxy` filter + cluster dials that host. Adding an
+/// upstream is a config value, not a new cluster.
+fn envoy_bootstrap_dfp(filter_config: &str) -> Vec<u8> {
+    const TEMPLATE: &str = r#"
+admin: { address: { socket_address: { address: 0.0.0.0, port_value: 9901 } } }
+static_resources:
+  listeners:
+  - name: main
+    address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress
+          route_config:
+            name: local
+            virtual_hosts:
+            - name: all
+              domains: ["*"]
+              routes: [{ match: { prefix: "/" }, route: { cluster: dfp } }]
+          http_filters:
+          - name: envoy.filters.http.dynamic_modules
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+              dynamic_module_config: { name: evoxy_module }
+              filter_name: evoxy
+              filter_config:
+                "@type": type.googleapis.com/google.protobuf.StringValue
+                value: 'FILTER_CONFIG'
+          - name: envoy.filters.http.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+              dns_cache_config: { name: evoxy_dns, dns_lookup_family: V4_ONLY }
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: dfp
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config: { name: evoxy_dns, dns_lookup_family: V4_ONLY }
+"#;
+    TEMPLATE
         .replace("FILTER_CONFIG", filter_config)
         .into_bytes()
 }
@@ -384,6 +440,78 @@ async fn per_tenant_cluster_routes_to_different_upstreams() {
     assert!(
         !doc_found(&http, port_a, "2").await,
         "globex's doc is NOT in cluster A"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker + the evoxy-envoy image; run with --ignored"]
+async fn dynamic_forward_proxy_dials_the_tenancy_endpoint() {
+    // The osproxy-parity path: the tenancy returns a per-tenant ENDPOINT, the module
+    // sets it as `:authority`, and Envoy's dynamic_forward_proxy dials it — with NO
+    // cluster defined for either upstream. Two real OpenSearch backends; acme's
+    // endpoint and globex's endpoint differ, so each write lands on a different one.
+    let os_a = start_opensearch().await;
+    let os_b = start_opensearch().await;
+    let port_a = os_a.get_host_port_ipv4(9200).await.unwrap();
+    let port_b = os_b.get_host_port_ipv4(9200).await.unwrap();
+
+    // host.docker.internal is the host gateway inside the Envoy container; the two
+    // backends differ only by port, which the :authority carries.
+    let config = format!(
+        r#"{{"partition_header":"x-tenant","endpoint_by_partition":{{"acme":"http://host.docker.internal:{port_a}","globex":"http://host.docker.internal:{port_b}"}}}}"#
+    );
+    let envoy = GenericImage::new(IMAGE, IMAGE_TAG)
+        .with_exposed_port(ContainerPort::Tcp(10000))
+        .with_wait_for(WaitFor::message_on_stderr("starting main dispatch loop"))
+        .with_host("host.docker.internal", Host::HostGateway)
+        .with_copy_to("/etc/envoy/envoy.yaml", envoy_bootstrap_dfp(&config))
+        .with_startup_timeout(Duration::from_secs(60))
+        .start()
+        .await
+        .expect("evoxy-envoy starts (build it first: cargo xtask module-image)");
+    let base = format!(
+        "http://127.0.0.1:{}",
+        envoy.get_host_port_ipv4(10000).await.unwrap()
+    );
+    let http = reqwest::Client::new();
+
+    for (tenant, id, who) in [("acme", "1", "a"), ("globex", "2", "g")] {
+        let put = http
+            .put(format!("{base}/orders/_doc/{id}"))
+            .header("x-tenant", tenant)
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"who":"{who}"}}"#))
+            .send()
+            .await
+            .expect("PUT through module");
+        let status = put.status();
+        let ok = status.is_success();
+        let body = put.text().await.unwrap_or_default();
+        let logs = if ok {
+            String::new()
+        } else {
+            String::from_utf8(envoy.stderr_to_vec().await.unwrap_or_default()).unwrap_or_default()
+        };
+        assert!(ok, "{tenant} write {status}: {body}\n--- envoy ---\n{logs}");
+    }
+
+    // Each write reached the endpoint the tenancy named — proven by reading the two
+    // backends directly. No cluster was defined for either.
+    assert!(
+        doc_found(&http, port_a, "1").await,
+        "acme dialed endpoint A"
+    );
+    assert!(
+        !doc_found(&http, port_b, "1").await,
+        "acme not on endpoint B"
+    );
+    assert!(
+        doc_found(&http, port_b, "2").await,
+        "globex dialed endpoint B"
+    );
+    assert!(
+        !doc_found(&http, port_a, "2").await,
+        "globex not on endpoint A"
     );
 }
 

@@ -93,6 +93,24 @@ pub struct PreparedForward {
     pub body: Vec<u8>,
     /// Header mutations to apply before forwarding (empty until migration/M5).
     pub header_ops: Vec<osproxy_spi::HeaderOp>,
+    /// The upstream host authority (`host:port`) the placement's endpoint names, if
+    /// the tenancy set one (`PlacementAt::with_endpoint`). The filter sets it as the
+    /// request `:authority` so Envoy's dynamic-forward-proxy dials it — the tenancy
+    /// chooses the upstream by address, with no cluster defined for it. `None` when
+    /// the tenancy names no endpoint (static-cluster routing by `cluster` instead).
+    pub upstream_host: Option<String>,
+}
+
+/// The `host:port` authority of an endpoint URL, for the request `:authority`.
+/// `http://eu-1.internal:9200/` → `eu-1.internal:9200`. Scheme and any path are
+/// dropped; a bare `host:port` is returned as-is.
+#[must_use]
+pub fn authority_of(endpoint: &str) -> Option<String> {
+    let after_scheme = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    (!authority.is_empty()).then(|| authority.to_owned())
 }
 
 /// Errors from applying the body transform. Kept separate from [`SpiError`] so
@@ -232,6 +250,12 @@ fn bulk_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
         path: "/_bulk".to_owned(),
         body,
         header_ops: resolved.decision.header_ops.clone(),
+        upstream_host: resolved
+            .decision
+            .target
+            .endpoint
+            .as_deref()
+            .and_then(authority_of),
     })
 }
 
@@ -261,6 +285,12 @@ fn demux_forward(resolved: &Resolved, ctx: &RequestCtx<'_>, kind: DemuxKind) -> 
         path: format!("/{verb}"),
         body,
         header_ops: resolved.decision.header_ops.clone(),
+        upstream_host: resolved
+            .decision
+            .target
+            .endpoint
+            .as_deref()
+            .and_then(authority_of),
     })
 }
 
@@ -289,6 +319,37 @@ pub async fn resolve_cluster<R: Router + ?Sized>(
     }
     match router.resolve(ctx).await {
         Ok(resolved) => Ok(resolved.decision.target.cluster.as_str().to_owned()),
+        Err(err) => Err(immediate(spi_status(&err), spi_code(&err))),
+    }
+}
+
+/// Resolve the header-phase routing facets a backend sets before the body arrives:
+/// the upstream cluster name (for header-matched routes) and the upstream host
+/// authority (for dynamic-forward-proxy). Both come from the partition, which is
+/// known from the headers, so Envoy can route before the body. Same supported-
+/// endpoint set and fail-closed mapping as [`resolve_cluster`].
+///
+/// # Errors
+/// A [`FilterResponse`] (501 for an unsupported endpoint, or the mapped routing
+/// status) the filter should send as an immediate reply.
+pub async fn resolve_target<R: Router + ?Sized>(
+    router: &R,
+    ctx: &RequestCtx<'_>,
+) -> Result<(String, Option<String>), FilterResponse> {
+    if !is_supported(ctx.endpoint()) {
+        return Err(immediate(501, "endpoint_not_supported_yet"));
+    }
+    match router.resolve(ctx).await {
+        Ok(resolved) => {
+            let cluster = resolved.decision.target.cluster.as_str().to_owned();
+            let host = resolved
+                .decision
+                .target
+                .endpoint
+                .as_deref()
+                .and_then(authority_of);
+            Ok((cluster, host))
+        }
         Err(err) => Err(immediate(spi_status(&err), spi_code(&err))),
     }
 }
@@ -351,6 +412,12 @@ fn write_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
         path,
         body: transformed.body,
         header_ops: resolved.decision.header_ops.clone(),
+        upstream_host: resolved
+            .decision
+            .target
+            .endpoint
+            .as_deref()
+            .and_then(authority_of),
     })
 }
 
@@ -387,6 +454,12 @@ fn by_id_forward(resolved: &Resolved, ctx: &RequestCtx<'_>) -> Forward {
         path,
         body: Vec::new(),
         header_ops: resolved.decision.header_ops.clone(),
+        upstream_host: resolved
+            .decision
+            .target
+            .endpoint
+            .as_deref()
+            .and_then(authority_of),
     })
 }
 
@@ -409,6 +482,12 @@ fn query_forward(resolved: &Resolved, ctx: &RequestCtx<'_>, verb: &str) -> Forwa
         path: format!("/{}/{verb}", target.index.as_str()),
         body,
         header_ops: resolved.decision.header_ops.clone(),
+        upstream_host: resolved
+            .decision
+            .target
+            .endpoint
+            .as_deref()
+            .and_then(authority_of),
     })
 }
 

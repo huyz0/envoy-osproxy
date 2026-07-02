@@ -139,6 +139,25 @@ tenancy just returns the cluster from `placement_for`.
 is a ready config, and the `per_tenant_cluster_routes_to_different_upstreams` live
 test proves two tenants land in two different OpenSearch backends.
 
+## Routing to endpoints without defining clusters
+
+If you would rather not enumerate clusters at all — the way standalone osproxy just
+returns an endpoint from the SPI and dials it — return the upstream endpoint from
+`placement_for` (`.with_endpoint("http://os-eu.internal:9200")`). The module puts
+its host on the request `:authority`, and Envoy's built-in `dynamic_forward_proxy`
+resolves and dials it on demand, with no cluster defined for that upstream and no
+control plane. Adding a tenant is then just returning its endpoint — nothing in the
+Envoy config changes.
+
+The reference tenancy drives this with an `endpoint_by_partition` map; the ready
+config is
+[`examples/envoy/dynamic-forward-proxy.yaml`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/envoy/dynamic-forward-proxy.yaml),
+and the `dynamic_forward_proxy_dials_the_tenancy_endpoint` live test proves two
+tenants reach two OpenSearch backends that no cluster was defined for. The trade-off
+versus named clusters is one shared upstream TLS/health/pool config for all dialed
+hosts; for a fleet of OpenSearch clusters behind one CA that is usually fine. For a
+changing set of clusters each with distinct upstream config, pair this with CDS.
+
 ## Verifying it
 
 The end-to-end test loads the built image and drives real traffic through it,

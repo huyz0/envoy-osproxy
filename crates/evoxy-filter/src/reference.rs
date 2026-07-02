@@ -38,6 +38,11 @@ pub struct FilterConfig {
     pub cluster_by_partition: BTreeMap<String, String>,
     /// That cluster's base URL (carried on the placement result).
     pub endpoint: String,
+    /// Per-partition endpoint overrides: a partition listed here carries its named
+    /// base URL on the placement, which the filter turns into the request
+    /// `:authority` for Envoy's dynamic-forward-proxy — the tenancy picks the
+    /// upstream by address, with no Envoy cluster defined for it. Empty by default.
+    pub endpoint_by_partition: BTreeMap<String, String>,
     /// The request header the partition id is read from.
     pub partition_header: String,
     /// When set, run shared-index mode against this physical index (isolation by
@@ -57,6 +62,7 @@ impl Default for FilterConfig {
             cluster: "opensearch".to_owned(),
             cluster_by_partition: BTreeMap::new(),
             endpoint: "http://localhost:9200".to_owned(),
+            endpoint_by_partition: BTreeMap::new(),
             partition_header: "x-tenant".to_owned(),
             shared_index: None,
             inject_field: "_tenant".to_owned(),
@@ -78,20 +84,23 @@ impl FilterConfig {
                 .and_then(serde_json::Value::as_str)
                 .map_or(fallback, ToOwned::to_owned)
         };
-        // `cluster_by_partition`: a JSON object of partition → cluster string.
-        let cluster_by_partition = parsed
-            .get("cluster_by_partition")
-            .and_then(serde_json::Value::as_object)
-            .map(|map| {
-                map.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // A JSON object of partition → string (for the per-partition maps).
+        let string_map = |key: &str| {
+            parsed
+                .get(key)
+                .and_then(serde_json::Value::as_object)
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         Self {
             cluster: string("cluster", default.cluster),
-            cluster_by_partition,
+            cluster_by_partition: string_map("cluster_by_partition"),
             endpoint: string("endpoint", default.endpoint),
+            endpoint_by_partition: string_map("endpoint_by_partition"),
             partition_header: string("partition_header", default.partition_header),
             shared_index: parsed
                 .get("shared_index")
@@ -116,6 +125,7 @@ pub struct ReferenceTenancy {
     cluster: ClusterId,
     cluster_by_partition: BTreeMap<String, ClusterId>,
     endpoint: String,
+    endpoint_by_partition: BTreeMap<String, String>,
     partition_header: String,
     shared_index: Option<IndexName>,
     inject_field: FieldName,
@@ -139,6 +149,7 @@ impl ReferenceTenancy {
             cluster: ClusterId::from(cluster.into().as_str()),
             cluster_by_partition: BTreeMap::new(),
             endpoint: endpoint.into(),
+            endpoint_by_partition: BTreeMap::new(),
             partition_header: header.into(),
             shared_index: None,
             inject_field: FieldName::from("_tenant"),
@@ -168,6 +179,7 @@ impl ReferenceTenancy {
                 .map(|(k, v)| (k.clone(), ClusterId::from(v.as_str())))
                 .collect(),
             endpoint: config.endpoint.clone(),
+            endpoint_by_partition: config.endpoint_by_partition.clone(),
             partition_header: config.partition_header.clone(),
             shared_index: config.shared_index.as_deref().map(IndexName::from),
             inject_field: FieldName::from(config.inject_field.as_str()),
@@ -184,6 +196,16 @@ impl ReferenceTenancy {
             .get(partition.as_str())
             .cloned()
             .unwrap_or_else(|| self.cluster.clone())
+    }
+
+    /// The base URL for `partition`: its per-partition override if configured, else
+    /// the default endpoint. Carried on the placement; the filter turns it into the
+    /// `:authority` for dynamic-forward-proxy routing.
+    fn endpoint_for(&self, partition: &PartitionId) -> String {
+        self.endpoint_by_partition
+            .get(partition.as_str())
+            .cloned()
+            .unwrap_or_else(|| self.endpoint.clone())
     }
 
     /// The migration phase for `partition` (Settled unless it is the one migrating
@@ -252,7 +274,7 @@ impl TenancySpi for ReferenceTenancy {
             None => Placement::DedicatedCluster { cluster },
         };
         Ok(PlacementAt::new(placement, Epoch::new(1))
-            .with_endpoint(self.endpoint.clone())
+            .with_endpoint(self.endpoint_for(partition))
             .with_phase(self.phase_of(partition)))
     }
 }

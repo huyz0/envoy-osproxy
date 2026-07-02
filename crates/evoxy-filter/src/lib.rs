@@ -40,6 +40,12 @@ pub trait EnvoyActions: Send {
     /// Route the request to this upstream cluster (the logical `ClusterId`; the
     /// Envoy bootstrap maps it to a real cluster — the ADR-002 seam).
     fn set_upstream_cluster(&mut self, cluster: &str);
+    /// Set the upstream host authority (`host:port`) the placement's endpoint names.
+    /// The backend sets it as the request `:authority` so Envoy's
+    /// dynamic-forward-proxy dials that host — the tenancy chooses the upstream by
+    /// address, no cluster defined for it. A backend using static-cluster routing
+    /// (by [`set_upstream_cluster`](Self::set_upstream_cluster)) can ignore this.
+    fn set_upstream_host(&mut self, host: &str);
     /// Replace the request method (`:method`).
     fn set_method(&mut self, method: &str);
     /// Replace the request path (`:path`).
@@ -126,6 +132,9 @@ impl<R: Router> Filter<R> {
         match prepare(&self.router, &parts.ctx()).await {
             Forward::Upstream(forward) => {
                 actions.set_upstream_cluster(&forward.cluster);
+                if let Some(host) = &forward.upstream_host {
+                    actions.set_upstream_host(host);
+                }
                 actions.set_method(forward.method);
                 actions.set_path(&forward.path);
                 actions.set_body(&forward.body);
@@ -163,9 +172,12 @@ impl<R: Router> Filter<R> {
             }
         };
 
-        match evoxy_route::resolve_cluster(&self.router, &parts.ctx()).await {
-            Ok(cluster) => {
+        match evoxy_route::resolve_target(&self.router, &parts.ctx()).await {
+            Ok((cluster, host)) => {
                 actions.set_upstream_cluster(&cluster);
+                if let Some(host) = host {
+                    actions.set_upstream_host(&host);
+                }
                 FilterDecision::ContinueUpstream
             }
             Err(resp) => {
