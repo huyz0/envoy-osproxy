@@ -11,6 +11,8 @@
 //! A real deployment supplies its own `TenancySpi`; this is the "works out of the
 //! box" default, the mirror of osproxy's `ReferenceTenancy`.
 
+use std::collections::BTreeMap;
+
 use osproxy_core::{ClusterId, Epoch, FieldName, IndexName, PartitionId};
 use osproxy_spi::{
     BodyDoc, DocIdRule, IdTemplate, InjectedField, InjectedValue, MigrationPhase, Placement,
@@ -26,8 +28,14 @@ const SHARED_ID_TEMPLATE: &str = "{partition}:{body.id}";
 /// a bare config still yields a runnable filter.
 #[derive(Debug, Clone)]
 pub struct FilterConfig {
-    /// The upstream cluster id every partition routes to.
+    /// The upstream cluster id a partition routes to by default.
     pub cluster: String,
+    /// Per-partition cluster overrides: a partition listed here routes to its named
+    /// cluster instead of [`cluster`](Self::cluster). This is what makes the module
+    /// (and ext_proc) route different tenants to different upstreams — the filter
+    /// sets the resolved cluster on `x-evoxy-cluster`, and header-matched Envoy
+    /// routes select it. Empty by default (single-cluster).
+    pub cluster_by_partition: BTreeMap<String, String>,
     /// That cluster's base URL (carried on the placement result).
     pub endpoint: String,
     /// The request header the partition id is read from.
@@ -47,6 +55,7 @@ impl Default for FilterConfig {
     fn default() -> Self {
         Self {
             cluster: "opensearch".to_owned(),
+            cluster_by_partition: BTreeMap::new(),
             endpoint: "http://localhost:9200".to_owned(),
             partition_header: "x-tenant".to_owned(),
             shared_index: None,
@@ -69,8 +78,19 @@ impl FilterConfig {
                 .and_then(serde_json::Value::as_str)
                 .map_or(fallback, ToOwned::to_owned)
         };
+        // `cluster_by_partition`: a JSON object of partition → cluster string.
+        let cluster_by_partition = parsed
+            .get("cluster_by_partition")
+            .and_then(serde_json::Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             cluster: string("cluster", default.cluster),
+            cluster_by_partition,
             endpoint: string("endpoint", default.endpoint),
             partition_header: string("partition_header", default.partition_header),
             shared_index: parsed
@@ -86,13 +106,15 @@ impl FilterConfig {
     }
 }
 
-/// A single-cluster reference tenancy. In dedicated mode the partition is a
-/// request header and the logical index is used unchanged; in shared-index mode
-/// all partitions share one physical index, isolated by an injected field and a
-/// partition-scoped doc id.
+/// The reference tenancy. In dedicated mode the partition is a request header and
+/// the logical index is used unchanged; in shared-index mode all partitions share
+/// one physical index, isolated by an injected field and a partition-scoped doc id.
+/// Routing is single-cluster by default, but `cluster_by_partition` can send named
+/// partitions to different upstream clusters (header-matched routing).
 #[derive(Debug, Clone)]
 pub struct ReferenceTenancy {
     cluster: ClusterId,
+    cluster_by_partition: BTreeMap<String, ClusterId>,
     endpoint: String,
     partition_header: String,
     shared_index: Option<IndexName>,
@@ -115,6 +137,7 @@ impl ReferenceTenancy {
     ) -> Self {
         Self {
             cluster: ClusterId::from(cluster.into().as_str()),
+            cluster_by_partition: BTreeMap::new(),
             endpoint: endpoint.into(),
             partition_header: header.into(),
             shared_index: None,
@@ -139,6 +162,11 @@ impl ReferenceTenancy {
     pub fn from_config(config: &FilterConfig) -> Self {
         Self {
             cluster: ClusterId::from(config.cluster.as_str()),
+            cluster_by_partition: config
+                .cluster_by_partition
+                .iter()
+                .map(|(k, v)| (k.clone(), ClusterId::from(v.as_str())))
+                .collect(),
             endpoint: config.endpoint.clone(),
             partition_header: config.partition_header.clone(),
             shared_index: config.shared_index.as_deref().map(IndexName::from),
@@ -146,6 +174,16 @@ impl ReferenceTenancy {
             partition_from_principal: config.partition_from_principal,
             migration: None,
         }
+    }
+
+    /// The upstream cluster for `partition`: its per-partition override if one is
+    /// configured, else the default cluster. This is the value the filter puts on
+    /// `x-evoxy-cluster` for header-matched routing.
+    fn cluster_for(&self, partition: &PartitionId) -> ClusterId {
+        self.cluster_by_partition
+            .get(partition.as_str())
+            .cloned()
+            .unwrap_or_else(|| self.cluster.clone())
     }
 
     /// The migration phase for `partition` (Settled unless it is the one migrating
@@ -204,18 +242,42 @@ impl TenancySpi for ReferenceTenancy {
     }
 
     async fn placement_for(&self, partition: &PartitionId) -> Result<PlacementAt, SpiError> {
+        let cluster = self.cluster_for(partition);
         let placement = match &self.shared_index {
             Some(index) => Placement::SharedIndex {
-                cluster: self.cluster.clone(),
+                cluster,
                 index: index.clone(),
                 inject: self.injected_fields(),
             },
-            None => Placement::DedicatedCluster {
-                cluster: self.cluster.clone(),
-            },
+            None => Placement::DedicatedCluster { cluster },
         };
         Ok(PlacementAt::new(placement, Epoch::new(1))
             .with_endpoint(self.endpoint.clone())
             .with_phase(self.phase_of(partition)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cluster_by_partition_overrides_the_default() {
+        let config = FilterConfig::from_json(
+            r#"{"cluster":"os_default","cluster_by_partition":{"acme":"os_a","globex":"os_b"}}"#,
+        );
+        let tenancy = ReferenceTenancy::from_config(&config);
+
+        // A mapped tenant routes to its cluster; an unmapped one to the default.
+        let acme = tenancy
+            .placement_for(&PartitionId::from("acme"))
+            .await
+            .unwrap();
+        let other = tenancy
+            .placement_for(&PartitionId::from("zzz"))
+            .await
+            .unwrap();
+        assert_eq!(acme.placement.cluster().as_str(), "os_a");
+        assert_eq!(other.placement.cluster().as_str(), "os_default");
     }
 }

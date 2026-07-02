@@ -1,0 +1,74 @@
+# Example Envoy bootstrap — DYNAMIC MODULE backend, MULTIPLE upstream clusters.
+#
+# Same in-process module as dynamic-module.yaml, but here a tenancy that returns a
+# different cluster per tenant routes to a different OpenSearch. The module sets the
+# resolved cluster on the `x-evoxy-cluster` request header (at the header phase, so
+# it is present before Envoy picks the route); the header-matched routes below select
+# the upstream. Still a stock envoyproxy/envoy — no fork, no rebuild.
+#
+# This example drives it with the built-in reference tenancy and a
+# `cluster_by_partition` map. A custom TenancySpi does the same by returning the
+# cluster from `placement_for`.
+static_resources:
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      # One header-matched route per cluster, then a default. The
+                      # module sets x-evoxy-cluster to the tenancy's chosen cluster.
+                      routes:
+                        - match:
+                            prefix: "/"
+                            headers: [{ name: x-evoxy-cluster, string_match: { exact: opensearch_b } }]
+                          route: { cluster: opensearch_b }
+                        - match:
+                            prefix: "/"
+                            headers: [{ name: x-evoxy-cluster, string_match: { exact: opensearch_a } }]
+                          route: { cluster: opensearch_a }
+                        - match: { prefix: "/" }
+                          route: { cluster: opensearch_a }   # default / fallback
+                http_filters:
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config: { name: evoxy_module }
+                      filter_name: evoxy
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: |
+                          {
+                            "cluster": "opensearch_a",
+                            "partition_header": "x-tenant",
+                            "cluster_by_partition": {
+                              "acme": "opensearch_a",
+                              "globex": "opensearch_b"
+                            }
+                          }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    # Each logical cluster the tenancy names maps to a real OpenSearch upstream.
+    - name: opensearch_a
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: opensearch_a
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: opensearch-a.internal, port_value: 9200 } } }
+    - name: opensearch_b
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: opensearch_b
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: opensearch-b.internal, port_value: 9200 } } }

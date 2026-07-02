@@ -87,8 +87,7 @@ Both are commented sketches. Fill in your OpenSearch addresses.
 Verified end to end on both backends: partitioning by header or mTLS principal;
 dedicated-cluster and shared-index isolation; the request transform (physical-index
 path rewrite, field injection, partition-scoped id) and response reshaping;
-`_bulk`/`_mget`/`_msearch`; bounded-memory caps; and the migration write gate.
-
-Not honored live yet: a per-request cluster override, because the module does not
-apply one, so a multi-tenant placement that varies the cluster per request does not
-route to different clusters. Single-cluster placement is the supported path.
+`_bulk`/`_mget`/`_msearch`; bounded-memory caps; the migration write gate; and
+per-request cluster routing (a tenancy that returns a different cluster per tenant
+lands each tenant on a different upstream, via `x-evoxy-cluster` header-matched
+routes — see [`envoy/dynamic-module-multicluster.yaml`](envoy/dynamic-module-multicluster.yaml)).

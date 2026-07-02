@@ -21,6 +21,15 @@ use evoxy_route::{prepare, Forward};
 use osproxy_spi::HeaderOp;
 use osproxy_tenancy::Router;
 
+/// The request header the filter sets to name the upstream cluster its placement
+/// chose. Envoy's route config matches on it to pick the real cluster (the ADR-002
+/// `Target → cluster` seam), so a tenancy that returns a different cluster per
+/// request routes to a different upstream. Both backends use this one name; the
+/// Envoy bootstrap must have header-matched routes for it (see the multi-cluster
+/// example config) — without them the header is inert and every request falls
+/// through to the default route.
+pub const CLUSTER_HEADER: &str = "x-evoxy-cluster";
+
 /// The Envoy-side effects the filter needs, abstracted from the SDK. The excluded
 /// `evoxy-module` crate implements this over the real Envoy filter handle; tests
 /// implement it with a recorder. All methods are synchronous `&mut self` so the

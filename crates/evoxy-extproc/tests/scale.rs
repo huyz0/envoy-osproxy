@@ -271,6 +271,7 @@ async fn concurrency_bodysize_and_rewrite_matrix() {
     // Shared-index mode: writes through the filter get the full transform.
     let config = FilterConfig {
         cluster: "opensearch".to_owned(),
+        cluster_by_partition: Default::default(),
         endpoint: "http://unused".to_owned(),
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),

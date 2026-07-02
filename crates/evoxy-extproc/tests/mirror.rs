@@ -213,6 +213,7 @@ async fn envoy_mirrors_the_transformed_request_to_the_bridge() {
     // `orders_shared`, partition-scoped id `acme:1`, injected `_tenant`.
     let config = FilterConfig {
         cluster: "opensearch".to_owned(),
+        cluster_by_partition: Default::default(),
         endpoint: "http://unused".to_owned(),
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),

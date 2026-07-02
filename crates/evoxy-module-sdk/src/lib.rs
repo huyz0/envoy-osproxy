@@ -57,6 +57,21 @@ impl<R: Router> Module<R> {
         self.runtime.block_on(self.filter.handle(req, actions))
     }
 
+    /// Resolve **only** the upstream cluster from the request headers and set it,
+    /// at the header phase — before Envoy selects a route. A write buffers its body
+    /// before the transform runs, but its cluster is known from the headers, so
+    /// naming it here (via `x-evoxy-cluster`) lets Envoy route on it; the body-phase
+    /// [`on_request`](Self::on_request) then applies the path/body transform. Reads
+    /// resolve fully at the header phase and do not need this. Returns whether to
+    /// continue (a resolution error sends a fail-closed reply and stops).
+    pub fn route_headers(
+        &self,
+        req: &FilterRequest,
+        actions: &mut dyn EnvoyActions,
+    ) -> FilterDecision {
+        self.runtime.block_on(self.filter.route_headers(req, actions))
+    }
+
     /// Reshape a read's upstream response into the client's logical view (strip
     /// injected fields, map physical ids back to logical). `req` is rebuilt from the
     /// captured request headers; `upstream_body` is the cluster's response body.

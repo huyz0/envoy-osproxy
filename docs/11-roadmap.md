@@ -42,11 +42,11 @@ local replies, no Envoy needed. **(1b-module) `evoxy-module`, done
 (workspace-excluded, ADR-004).** The reusable glue lives in `evoxy-module-sdk`
 (the `register!` macro + SDK binding, generic over any tenancy); `evoxy-module` is
 the reference cdylib, one `register!` over it. The binding implements the SDK's
-`HttpFilter`/`HttpFilterConfig` over the brain via an owned `SdkActions` recorder. **Verified building `libevoxy_module.so`**, exports the
-full `envoy_dynamic_module_event_*` ABI (a loadable module). SDK-0.1.x limits
-routing/header rewrites to the header phase (M2), like ext_proc; the reference
-default (static route) needs only body + fail-closed reply, which it does. Remaining:
-an e2e through a real Envoy loading the `.so` (parallels the ext_proc e2e).
+`HttpFilter`/`HttpFilterConfig` over the brain via an owned `SdkActions` recorder. **Verified live** through a real Envoy loading the `.so` (e2e_module: write/read,
+shared-index isolation, and per-tenant cluster routing). Per-request cluster
+override works: the module sets `x-evoxy-cluster` at the header phase and Envoy
+routes on header-matched routes (the reference tenancy's `cluster_by_partition`
+drives it; a custom tenancy returns the cluster from `placement_for`).
 
 **(1b-extproc) `evoxy-extproc`, done (the verifiable-here backend, ADR-001).** An
 Envoy External Processing gRPC service (`tonic` + `envoy-types`, pure Rust, no

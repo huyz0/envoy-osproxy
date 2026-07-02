@@ -252,6 +252,7 @@ async fn shared_index_isolates_tenants() {
     // Shared-index mode: both tenants share physical index `orders_shared`.
     let config = FilterConfig {
         cluster: "opensearch".to_owned(),
+        cluster_by_partition: Default::default(),
         endpoint: "http://unused".to_owned(),
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),

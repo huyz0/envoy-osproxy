@@ -115,12 +115,29 @@ http_filters:
 The `filter_config` blob configures the reference tenancy. A custom tenancy reads
 whatever configuration it needs from this same blob.
 
-## One current limitation
+## Per-request cluster routing
 
-The module does not apply a per-request cluster override yet, so a tenancy that
-returns a different `cluster` per request will not route to different clusters.
-Single-cluster placement, with per-tenant index selection and shared-index
-isolation, is the supported path today.
+A tenancy that returns a different cluster per request routes to a different
+upstream. The module sets the resolved cluster on the `x-evoxy-cluster` request
+header at the header phase, and Envoy selects the upstream from header-matched
+routes. Your bootstrap needs those routes, one per cluster plus a default:
+
+```yaml
+routes:
+- match: { prefix: "/", headers: [{ name: x-evoxy-cluster, string_match: { exact: opensearch_b } }] }
+  route: { cluster: opensearch_b }
+- match: { prefix: "/", headers: [{ name: x-evoxy-cluster, string_match: { exact: opensearch_a } }] }
+  route: { cluster: opensearch_a }
+- match: { prefix: "/" }
+  route: { cluster: opensearch_a }   # default
+```
+
+The built-in reference tenancy can drive this with a `cluster_by_partition` map in
+its `filter_config` (`{"acme":"opensearch_a","globex":"opensearch_b"}`); a custom
+tenancy just returns the cluster from `placement_for`.
+[`examples/envoy/dynamic-module-multicluster.yaml`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/envoy/dynamic-module-multicluster.yaml)
+is a ready config, and the `per_tenant_cluster_routes_to_different_upstreams` live
+test proves two tenants land in two different OpenSearch backends.
 
 ## Verifying it
 

@@ -21,7 +21,7 @@ use envoy_proxy_dynamic_modules_rust_sdk::{
     HttpFilterConfig, NewHttpFilterConfigFunction, NEW_HTTP_FILTER_CONFIG_FUNCTION,
 };
 use evoxy_abi::{FilterRequest, HttpVersion, MtlsIdentity};
-use evoxy_filter::EnvoyActions;
+use evoxy_filter::{EnvoyActions, FilterDecision};
 use osproxy_tenancy::Router;
 use tokio::runtime::Runtime;
 
@@ -134,7 +134,20 @@ where
             self.process(envoy, Vec::new());
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
         } else {
-            // Hold headers; the body-dependent transform runs once buffered.
+            // A write: the body-dependent transform waits for the buffered body, but
+            // the upstream cluster is already known from the headers. Set it now, at
+            // the header phase, so Envoy routes on `x-evoxy-cluster` before the body
+            // arrives — a body-phase override lands after the route is chosen and is
+            // ignored (why per-tenant routing needs this). A resolution error here
+            // fails closed immediately.
+            let req = build_request(&self.headers, Vec::new());
+            let mut actions = SdkActions::new(Vec::new());
+            let decision = self.shared.module.route_headers(&req, &mut actions);
+            actions.apply(envoy);
+            if decision == FilterDecision::StoppedWithLocalReply {
+                // Already replied (fail-closed); do not wait for a body.
+                return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue;
+            }
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
         }
     }
@@ -238,6 +251,7 @@ struct SdkActions {
     original_body: Vec<u8>,
     method: Option<String>,
     path: Option<String>,
+    cluster: Option<String>,
     body: Option<Vec<u8>>,
     set_headers: Vec<(String, String)>,
     remove_headers: Vec<String>,
@@ -271,6 +285,16 @@ impl SdkActions {
         for name in self.remove_headers {
             envoy.remove_request_header(&name);
         }
+        // Name the upstream cluster the placement chose, and drop the route Envoy
+        // may have already computed so it re-matches on the header. A tenancy that
+        // returns a different cluster per request then routes to a different
+        // upstream — provided the bootstrap has header-matched routes for it (see
+        // the multi-cluster example). `:path` is set to its final value above, so
+        // the re-match never sees an empty path (the ext_proc 404 trap).
+        if let Some(cluster) = self.cluster {
+            envoy.set_request_header(evoxy_filter::CLUSTER_HEADER, cluster.as_bytes());
+            envoy.clear_route_cache();
+        }
         if let Some(body) = self.body {
             if body != self.original_body {
                 // Replace the buffered body: drain the old bytes, append the new.
@@ -289,10 +313,13 @@ impl SdkActions {
 }
 
 impl EnvoyActions for SdkActions {
-    // Cluster override is not exposed by this SDK rev; the reference tenancy
-    // static-routes to the one configured upstream, so this is recorded-then-ignored
-    // (the physical-index rewrite rides on `set_path`).
-    fn set_upstream_cluster(&mut self, _cluster: &str) {}
+    // Record the placement's cluster; `apply` sets the routing header and clears the
+    // route cache so Envoy re-matches on it (see `apply`). With a single-cluster
+    // tenancy and a catch-all route this is a harmless no-op re-match; with
+    // per-request clusters and header-matched routes it selects the upstream.
+    fn set_upstream_cluster(&mut self, cluster: &str) {
+        self.cluster = Some(cluster.to_owned());
+    }
     fn set_method(&mut self, method: &str) {
         self.method = Some(method.to_owned());
     }

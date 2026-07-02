@@ -134,10 +134,10 @@ Because the id template is reversible, the client sends and receives its own
   physical index, isolated by the injected field and a partition-scoped id. This is
   the example above.
 
-One limitation to know today: returning a different `cluster` per request does not
-yet route to different clusters on the dynamic-module backend, because that backend
-does not apply a per-request cluster override. Single-cluster placement is the
-supported path. See [Building the dynamic module](04-build-module.md).
+Returning a different `cluster` per request routes to a different upstream on both
+backends: the filter sets the resolved cluster on the `x-evoxy-cluster` header and
+Envoy selects the upstream from header-matched routes. Your bootstrap needs those
+routes — see [Building the dynamic module](04-build-module.md).
 
 ## Next
 
