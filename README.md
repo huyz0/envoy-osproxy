@@ -1,5 +1,11 @@
 # envoy-osproxy
 
+[![CI](https://github.com/huyz0/envoy-osproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/huyz0/envoy-osproxy/actions/workflows/ci.yml)
+[![Docs](https://github.com/huyz0/envoy-osproxy/actions/workflows/docs.yml/badge.svg)](https://github.com/huyz0/envoy-osproxy/actions/workflows/docs.yml)
+[![Release](https://github.com/huyz0/envoy-osproxy/actions/workflows/release.yml/badge.svg)](https://github.com/huyz0/envoy-osproxy/actions/workflows/release.yml)
+[![User guide](https://img.shields.io/badge/guide-huyz0.github.io%2Fenvoy--osproxy-blue)](https://huyz0.github.io/envoy-osproxy/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
 Envoy, without forking, patching, or recompiling Envoy. Point a standard
 `envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
@@ -73,6 +79,21 @@ cargo xtask module-image # build the dynamic module into a stock Envoy image (Do
 
 The Docker-gated live tests (real Envoy and OpenSearch) are ignored by default. Run
 them with `cargo test -p evoxy-extproc -- --ignored`.
+
+## Release
+
+Pushing a `v*` tag runs the [Release](.github/workflows/release.yml) workflow,
+which bakes the dynamic module into a stock Envoy and publishes the image to
+`ghcr.io/huyz0/evoxy-envoy` (tagged with the version and `latest`). Envoy is never
+forked; the image only drops our `.so` into the upstream binary's search path. To
+run the module backend without building it yourself:
+
+```sh
+docker pull ghcr.io/huyz0/evoxy-envoy:latest
+```
+
+The ext_proc backend has no prebuilt image by design: it embeds your tenancy, so
+you build that small server yourself (see the [user guide](https://huyz0.github.io/envoy-osproxy/)).
 
 ## License
 
