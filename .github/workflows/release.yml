@@ -1,14 +1,16 @@
 name: Release
 
-# CD for the one shippable artifact: the evoxy dynamic module baked into a stock,
-# unmodified Envoy (ADR-004). On a version tag we build that image and publish it
-# to GitHub Container Registry, so an operator can `docker pull` a ready image
-# instead of building the `.so` themselves. Envoy itself is never forked — the
-# image only drops our `.so` into the upstream binary's search path.
+# CD on a version tag. Two artifacts:
+#  - the reusable library crates, published to crates.io (the `crates` job);
+#  - the reference dynamic module baked into a stock, unmodified Envoy, published
+#    to GHCR so an operator can `docker pull` instead of building the `.so`.
+# Envoy itself is never forked — the image only drops our `.so` into the upstream
+# binary's search path (ADR-004).
 on:
   push:
     tags: ["v*"]
-  # Allow a manual publish from the Actions tab (uses the branch's HEAD).
+  # Allow a manual image build from the Actions tab (uses the branch's HEAD). The
+  # crates job is tag-only (it publishes the tag's version).
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +22,47 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/evoxy-envoy
 
 jobs:
+  crates:
+    name: publish crates to crates.io
+    # Tag pushes only: the version to publish is the tag.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    env:
+      # cargo reads the token from this env var automatically. Add it once at
+      # Settings → Secrets and variables → Actions as CARGO_REGISTRY_TOKEN.
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Guard: the git tag must match the workspace version, so `vX.Y.Z` only ever
+      # publishes X.Y.Z. Stops a mistagged push from shipping the wrong version.
+      - name: Tag matches workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='evoxy-abi'))")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag workspace=$version"
+          test "$tag" = "$version" || { echo "::error::tag v$tag != workspace version $version"; exit 1; }
+
+      # Publish in dependency order. Each `cargo publish` blocks on the index until
+      # the just-published crate is available, so the next one resolves it. If a
+      # version is already on crates.io (a re-run), skip it rather than fail.
+      - name: Publish
+        run: |
+          set -euo pipefail
+          for c in evoxy-abi evoxy-adapter evoxy-route evoxy-filter evoxy-extproc evoxy-bridge; do
+            echo "::group::publish $c"
+            if cargo publish -p "$c" 2>&1 | tee /tmp/pub.log; then
+              echo "$c published"
+            elif grep -q "already exists\|already uploaded" /tmp/pub.log; then
+              echo "$c already on crates.io — skipping"
+            else
+              echo "::error::publishing $c failed"; exit 1
+            fi
+            echo "::endgroup::"
+          done
+
   image:
     name: publish evoxy-envoy image (module in stock Envoy)
     runs-on: ubuntu-latest
