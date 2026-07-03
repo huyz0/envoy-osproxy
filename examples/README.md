@@ -48,7 +48,7 @@ evoxy_module_sdk::register!(|config: &str| {
 `cargo build --release` in that crate produces your `.so`. `evoxy-module-sdk` is a
 git dependency because it links the Envoy SDK, which crates.io forbids at publish
 time. That is harmless here: you build and deploy a `.so`, you never publish it. To
-bake the reference module into a stock Envoy image, run `cargo xtask module-image`.
+bake the reference module into an Envoy image, run `cargo xtask module-image`.
 
 The ext_proc server is a small `tokio` and `tonic` binary serving `ExtProcService`.
 The reference-tenancy server the live tests run is a few lines:
@@ -76,8 +76,8 @@ above.
 
 ## Configure Envoy
 
-Stock Envoy, no rebuild. Load the artifact and map the logical clusters your
-placement returns to real OpenSearch upstreams:
+Load the artifact and map the logical clusters your placement returns to real
+OpenSearch upstreams:
 
 - [`envoy/dynamic-module.yaml`](envoy/dynamic-module.yaml) loads the module filter.
 - [`envoy/extproc.yaml`](envoy/extproc.yaml) points the ext_proc filter at your

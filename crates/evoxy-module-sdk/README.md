@@ -63,7 +63,7 @@ client's logical view.
 ## What is verified
 
 The reference cdylib built on this crate ([`evoxy-module`](../evoxy-module)) is
-loaded by a stock, unmodified `envoyproxy/envoy:v1.37.0`, and driven against a real
+loaded by `envoyproxy/envoy:v1.37.0`, and driven against a real
 OpenSearch by `crates/evoxy-extproc/tests/e2e_module.rs` (a shared-index multi-tenant
 round-trip exercising both the request and response transform) and `perf_module.rs`
 (the three-leg latency comparison). The `custom-module` example is compiled in CI, so

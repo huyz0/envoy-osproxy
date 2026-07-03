@@ -8,8 +8,8 @@ the reference tenancy. It is one line over
 evoxy_module_sdk::register!(evoxy_module_sdk::reference_router);
 ```
 
-A stock Envoy loads the built `libevoxy_module.so`; the reference router reads its
-placement (dedicated cluster or shared index) from Envoy's `filter_config` blob.
+Envoy loads the built `libevoxy_module.so`; the reference router reads its placement
+(dedicated cluster or shared index) from Envoy's `filter_config` blob.
 
 To build your **own** module (with your tenancy) you write the same one line with
 your factory instead of `reference_router`, so you do not fork this crate. See
@@ -22,7 +22,7 @@ Needs `clang` + `libclang` (the SDK binds Envoy's C ABI via `bindgen`). From the
 repo root:
 
 ```sh
-cargo xtask module-image   # builds the .so and bakes it into a stock Envoy image
+cargo xtask module-image   # builds the .so and bakes it into an Envoy image
 ```
 
 or directly:

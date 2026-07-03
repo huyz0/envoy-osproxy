@@ -1,6 +1,6 @@
 # Benchmarks
 
-What the two backends cost, measured end to end through a stock Envoy into a real
+What the two backends cost, measured end to end through Envoy into a real
 OpenSearch. The short version: the dynamic module adds no measurable latency over
 Envoy, ext_proc adds a couple of milliseconds for its out-of-process hop, and the
 per-request transform work is microseconds, swamped by OpenSearch's own write
@@ -17,7 +17,7 @@ them as ratios and shapes, not absolutes for your hardware.
 | CPU | Intel i5-13600KF, 20 threads |
 | RAM | 31 GB |
 | OS | Linux 6.18 (WSL2) |
-| Envoy | stock `envoyproxy/envoy:v1.37.0` |
+| Envoy | `envoyproxy/envoy:v1.37.0` |
 | OpenSearch | `opensearchproject/opensearch:2.11.1`, single node |
 | Network | loopback + containerized OpenSearch |
 | Build | `rustc 1.94`, `--release` for the `.so`, debug for the load driver |

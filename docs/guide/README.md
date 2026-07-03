@@ -1,7 +1,6 @@
 # Introduction
 
-Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
-Envoy, without forking, patching, or recompiling Envoy. Point a standard
+Multi-tenant OpenSearch proxy capabilities delivered as an Envoy extension. Point an
 `envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
 per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
 demux, epoch-gated migration, shape-only observability, traffic capture, and async
@@ -58,7 +57,7 @@ independent deploy matter more than a couple of milliseconds.
 | ext_proc | out-of-process gRPC sidecar | +2.3 ms over Envoy | process isolation, independent deploy |
 | dynamic module | in-process Rust `.so` | about 0 ms over Envoy (within the noise) | lowest latency, shared crash domain |
 
-Both are verified end to end through a stock, unmodified Envoy. The
+Both are verified end to end. The
 [backend comparison](05-backends.md) has the measured numbers.
 
 ## Where to go next

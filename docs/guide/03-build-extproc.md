@@ -114,7 +114,7 @@ transform needs.
 ## Verifying it
 
 The end-to-end test in the repository runs this backend against a real OpenSearch
-behind a stock Envoy:
+behind Envoy:
 
 ```sh
 cargo test -p evoxy-extproc --test e2e -- --ignored

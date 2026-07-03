@@ -6,8 +6,7 @@
 [![User guide](https://img.shields.io/badge/guide-huyz0.github.io%2Fenvoy--osproxy-blue)](https://huyz0.github.io/envoy-osproxy/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
-Envoy, without forking, patching, or recompiling Envoy. Point a standard
+Multi-tenant OpenSearch proxy capabilities delivered as an Envoy extension. Point an
 `envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
 per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
 demux, epoch-gated migration, shape-only observability, and async fan-out.
@@ -39,9 +38,8 @@ independent deploy are worth a couple of milliseconds.
 | ext_proc | out-of-process gRPC sidecar | +2.3 ms over Envoy | process isolation, independent deploy |
 | dynamic module | in-process Rust `.so` | about 0 ms over Envoy (within the noise) | lowest latency, shared crash domain |
 
-Both are verified end to end through a stock, unmodified Envoy. Operators run an
-unmodified Envoy release; our logic ships as bootstrap config plus a loadable
-artifact. We never patch Envoy source.
+Both are verified end to end. Our logic ships as bootstrap config plus a loadable
+artifact, loaded through Envoy's own extension points.
 
 ## This is a toolkit, not a ready-to-run proxy
 
@@ -75,7 +73,7 @@ through all three steps.
 scripts/setup-hooks.sh   # once: install the commit and pre-commit gate
 cargo xtask ci           # fmt, clippy, arch, test, doc, budgets
 cargo xtask bench        # instruction-count microbenchmarks (needs valgrind)
-cargo xtask module-image # build the dynamic module into a stock Envoy image (Docker)
+cargo xtask module-image # build the dynamic module into an Envoy image (Docker)
 ```
 
 The Docker-gated live tests (real Envoy and OpenSearch) are ignored by default. Run

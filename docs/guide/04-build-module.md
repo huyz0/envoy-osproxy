@@ -1,7 +1,7 @@
 # Building the dynamic module
 
-The dynamic module runs your logic in-process, as a shared library that a stock
-Envoy loads through its dynamic-modules interface. There is no separate service and
+The dynamic module runs your logic in-process, as a shared library that Envoy loads
+through its dynamic-modules interface. There is no separate service and
 no gRPC hop, so this is the lower-latency backend. A crash in the module takes the
 Envoy worker with it, so the same no-panic discipline the code follows is
 load-bearing here.
@@ -28,15 +28,14 @@ Docker is the only host requirement for that path.
 
 ## The one command
 
-The repository builds the module and bakes it into a stock Envoy image in one step:
+The repository builds the module and bakes it into an Envoy image in one step:
 
 ```sh
 cargo xtask module-image
 ```
 
-This produces `evoxy-envoy:v1.37.0`: an unmodified `envoyproxy/envoy:v1.37.0` with
-`libevoxy_module.so` dropped into its dynamic-modules search path. No fork, no
-rebuild of Envoy.
+This produces `evoxy-envoy:v1.37.0`: `envoyproxy/envoy:v1.37.0` with
+`libevoxy_module.so` dropped into its dynamic-modules search path.
 
 ## Building your own module
 
@@ -84,7 +83,7 @@ dynamic-modules SDK, which lives in the `envoyproxy/envoy` git tree, and crates.
 forbids git dependencies at publish time. That never affects you, because you build
 and deploy a `.so` and never publish it. A complete, compiling version is
 [`examples/custom-module`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/custom-module);
-bake it into a stock Envoy the same way the reference module does (the Dockerfile
+bake it into an Envoy image the same way the reference module does (the Dockerfile
 just names a different `.so`).
 
 The tenancy is compiled into the `.so`, not loaded at runtime, so rebuild after any

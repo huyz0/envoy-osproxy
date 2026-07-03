@@ -60,7 +60,7 @@ export default defineConfig({
     starlight({
       title: "envoy-osproxy",
       description:
-        "Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock Envoy.",
+        "Multi-tenant OpenSearch proxy capabilities delivered as an Envoy extension.",
       social: [{ icon: "github", label: "GitHub", href: repo }],
       head: [
         { tag: "script", attrs: { type: "module" }, content: mermaidBoot },

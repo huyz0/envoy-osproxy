@@ -19,7 +19,7 @@ fast and the fan-out fire-and-forget.
 
 ```mermaid
 flowchart LR
-  client([client]) --> envoy[stock Envoy + evoxy filter]
+  client([client]) --> envoy[Envoy + evoxy filter]
   envoy -->|primary, sync| os[(OpenSearch)]
   envoy -.->|mirror, fire-and-forget| bridge[evoxy-bridge]
   bridge --> kafka[(Kafka)]

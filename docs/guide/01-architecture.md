@@ -14,7 +14,7 @@ Click any diagram to zoom.
 flowchart TB
   client["Client<br/>(HTTP / gRPC, TLS / mTLS)"]
 
-  subgraph envoy["Stock Envoy (unmodified)"]
+  subgraph envoy["Envoy"]
     wire["Wire: TLS/mTLS, HTTP/1.1, H2, gRPC<br/>pooling, load balancing, retries"]
     seam{{"Extension point"}}
   end
@@ -35,9 +35,8 @@ flowchart TB
   os -->|response| seam
 ```
 
-Stock Envoy is an unmodified `envoyproxy/envoy` release. It terminates TLS, speaks
-every protocol, pools upstream connections, load-balances, and retries. We ship
-none of that.
+Envoy is an `envoyproxy/envoy` release. It terminates TLS, speaks every protocol,
+pools upstream connections, load-balances, and retries. We ship none of that.
 
 The adapter converts an Envoy request into the request the engine expects, and
 applies the engine's decision back onto the Envoy message: rewrite the path, inject
@@ -71,8 +70,8 @@ the logic.
 
 ## The two backends
 
-The extension point is one of two stock Envoy mechanisms. The brain is identical;
-only the transport differs.
+The extension point is one of two Envoy mechanisms. The brain is identical; only the
+transport differs.
 
 ```mermaid
 flowchart LR
