@@ -9,33 +9,30 @@ use envoy_types::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
 use evoxy_filter::{Filter, ReferenceTenancy};
 use osproxy_tenancy::TenancyRouter;
 
-use crate::directives::Directives;
 use crate::extproc::processing_request::Request as Req;
 use crate::extproc::processing_response::Response as Resp;
 use crate::extproc::{
     body_mutation, CommonResponse, HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
 };
-use crate::metrics::Metrics;
 use crate::{process_message, AsyncWriteSink, StreamState};
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use evoxy_filter::{Observe, ObserveConfig};
 use osproxy_kafka::ProduceError;
 
-/// Drive `process_message` with no async-write sink — the default for the sync-path
-/// tests. The async-write tests below build their own sink and call
-/// [`process_message`] directly.
+/// Drive `process_message` with a default observe surface and no async-write sink —
+/// the default for the sync-path tests. Tests that assert on metrics or the directive
+/// plane pass their own [`Observe`] to [`process_message`] directly.
 async fn pm(
     filter: &Filter<TenancyRouter<ReferenceTenancy>>,
-    metrics: &Metrics,
-    directives: &Directives,
-    admin_token: Option<&str>,
+    observe: &Observe,
     state: &mut StreamState,
     req: ProcessingRequest,
 ) -> ProcessingResponse {
-    process_message(filter, metrics, directives, admin_token, None, state, req).await
+    process_message(filter, observe, None, state, req).await
 }
 
 fn filter() -> Filter<TenancyRouter<ReferenceTenancy>> {
@@ -108,15 +105,7 @@ async fn headers_phase_continues_without_mutation() {
     let mut state = StreamState::default();
     let msg = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/42")], false);
 
-    let resp = pm(
-        &filter(),
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        msg,
-    )
-    .await;
+    let resp = pm(&filter(), &Observe::default(), &mut state, msg).await;
 
     assert!(matches!(resp.response, Some(Resp::RequestHeaders(_))));
     // headers were buffered for the body phase.
@@ -136,21 +125,11 @@ async fn body_phase_mutates_route_and_body() {
         ],
         false,
     );
-    let _ = pm(
-        &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        headers,
-    )
-    .await;
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
 
     let resp = pm(
         &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
+        &Observe::default(),
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -185,21 +164,11 @@ async fn over_cap_request_body_is_refused_413() {
         ],
         false,
     );
-    let _ = pm(
-        &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        headers,
-    )
-    .await;
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
 
     let resp = pm(
         &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
+        &Observe::default(),
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -225,25 +194,9 @@ async fn body_at_cap_is_allowed() {
         ],
         false,
     );
-    let _ = pm(
-        &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        headers,
-    )
-    .await;
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
 
-    let resp = pm(
-        &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        body_msg(body),
-    )
-    .await;
+    let resp = pm(&filter, &Observe::default(), &mut state, body_msg(body)).await;
     // Not a 413 — the body is transformed as usual.
     assert!(matches!(resp.response, Some(Resp::RequestBody(_))));
 }
@@ -251,7 +204,8 @@ async fn body_at_cap_is_allowed() {
 #[tokio::test]
 async fn metrics_path_is_answered_and_counts_outcomes() {
     let filter = filter();
-    let metrics = Metrics::default();
+    // One shared observe surface so the counters accumulate across streams.
+    let observe = Observe::default();
 
     // A routed write, then a rejected one (no tenant) — the counters move.
     let mut s1 = StreamState::default();
@@ -263,43 +217,19 @@ async fn metrics_path_is_answered_and_counts_outcomes() {
         ],
         false,
     );
-    let _ = pm(&filter, &metrics, &Directives::default(), None, &mut s1, h1).await;
-    let _ = pm(
-        &filter,
-        &metrics,
-        &Directives::default(),
-        None,
-        &mut s1,
-        body_msg(br#"{"k":1}"#),
-    )
-    .await;
+    let _ = pm(&filter, &observe, &mut s1, h1).await;
+    let _ = pm(&filter, &observe, &mut s1, body_msg(br#"{"k":1}"#)).await;
 
     let mut s2 = StreamState::default();
     let h2 = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/2")], false);
-    let _ = pm(&filter, &metrics, &Directives::default(), None, &mut s2, h2).await;
-    let _ = pm(
-        &filter,
-        &metrics,
-        &Directives::default(),
-        None,
-        &mut s2,
-        body_msg(br#"{"k":1}"#),
-    )
-    .await;
+    let _ = pm(&filter, &observe, &mut s2, h2).await;
+    let _ = pm(&filter, &observe, &mut s2, body_msg(br#"{"k":1}"#)).await;
 
     // The reserved path is answered directly with a shape-only snapshot; it is not
     // itself counted.
     let mut s3 = StreamState::default();
     let probe = headers_msg(&[(":method", "GET"), (":path", "/_evoxy/metrics")], true);
-    let resp = pm(
-        &filter,
-        &metrics,
-        &Directives::default(),
-        None,
-        &mut s3,
-        probe,
-    )
-    .await;
+    let resp = pm(&filter, &observe, &mut s3, probe).await;
     let immediate = match resp.response {
         Some(Resp::ImmediateResponse(immediate)) => Some(immediate),
         _ => None,
@@ -317,21 +247,11 @@ async fn unresolved_partition_yields_immediate_response() {
     let filter = filter();
     let mut state = StreamState::default();
     let headers = headers_msg(&[(":method", "PUT"), (":path", "/orders/_doc/42")], false);
-    let _ = pm(
-        &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
-        &mut state,
-        headers,
-    )
-    .await;
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
 
     let resp = pm(
         &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
+        &Observe::default(),
         &mut state,
         body_msg(br#"{"k":1}"#),
     )
@@ -344,27 +264,15 @@ async fn unresolved_partition_yields_immediate_response() {
     assert_eq!(status, Some(400));
 }
 
-/// Drive one reserved-path request and return its immediate `(status, body)`.
-async fn admin_probe(
-    directives: &Directives,
-    token: Option<&str>,
-    path: &str,
-    auth: Option<&str>,
-) -> (i32, String) {
+/// Drive one reserved-path request through an observe surface configured with
+/// `token`, returning its immediate `(status, body)`.
+async fn admin_probe(observe: &Observe, path: &str, auth: Option<&str>) -> (i32, String) {
     let mut pairs = vec![(":method", "POST"), (":path", path)];
     if let Some(a) = auth {
         pairs.push(("authorization", a));
     }
     let mut state = StreamState::default();
-    let resp = pm(
-        &filter(),
-        &Metrics::default(),
-        directives,
-        token,
-        &mut state,
-        headers_msg(&pairs, true),
-    )
-    .await;
+    let resp = pm(&filter(), observe, &mut state, headers_msg(&pairs, true)).await;
     let immediate = match resp.response {
         Some(Resp::ImmediateResponse(immediate)) => Some(immediate),
         _ => None,
@@ -378,38 +286,34 @@ async fn admin_probe(
 
 #[tokio::test]
 async fn admin_directives_are_token_gated_and_flip_live() {
-    let directives = Directives::default();
-
-    // No token configured, or a wrong/absent bearer → fail closed 403, no change.
-    let (status, _) = admin_probe(
-        &directives,
-        None,
-        "/_evoxy/admin/directives",
-        Some("Bearer s3cret"),
-    )
-    .await;
+    // No token configured → the plane fails closed even with a bearer present.
+    let no_token = Observe::default();
+    let (status, _) =
+        admin_probe(&no_token, "/_evoxy/admin/directives", Some("Bearer s3cret")).await;
     assert_eq!(status, 403);
+
+    // Token configured, but a wrong bearer → 403, unchanged.
+    let observe = Observe::from_config(&ObserveConfig {
+        admin_token: Some("s3cret".to_owned()),
+        emit_decision: true,
+    });
     let (status, _) = admin_probe(
-        &directives,
-        Some("s3cret"),
-        "/_evoxy/admin/directives",
+        &observe,
+        "/_evoxy/admin/directives?emit_decision=false",
         Some("Bearer wrong"),
     )
     .await;
     assert_eq!(status, 403);
-    assert!(directives.emit_decision(), "unchanged by rejected calls");
 
     // Correct token flips the directive live and echoes the new state.
     let (status, body) = admin_probe(
-        &directives,
-        Some("s3cret"),
+        &observe,
         "/_evoxy/admin/directives?emit_decision=false",
         Some("Bearer s3cret"),
     )
     .await;
     assert_eq!(status, 200);
     assert_eq!(body, r#"{"emit_decision":false}"#);
-    assert!(!directives.emit_decision(), "flipped live");
 }
 
 // ---- Async write mode (ADR-010) ----------------------------------------------
@@ -479,7 +383,7 @@ async fn drive_async_write(
     extra: &[(&str, &str)],
     body: &[u8],
 ) -> ProcessingResponse {
-    let metrics = Metrics::default();
+    let observe = Observe::default();
     let mut state = StreamState::default();
     let mut pairs = vec![
         (":method", method),
@@ -489,24 +393,13 @@ async fn drive_async_write(
     pairs.extend_from_slice(extra);
     let _ = process_message(
         filter,
-        &metrics,
-        &Directives::default(),
-        None,
+        &observe,
         sink,
         &mut state,
         headers_msg(&pairs, false),
     )
     .await;
-    process_message(
-        filter,
-        &metrics,
-        &Directives::default(),
-        None,
-        sink,
-        &mut state,
-        body_msg(body),
-    )
-    .await
+    process_message(filter, &observe, sink, &mut state, body_msg(body)).await
 }
 
 /// A dedicated-index reference tenancy: it rewrites the path to a per-tenant
@@ -598,9 +491,7 @@ async fn async_mode_on_a_read_is_rejected_400() {
     let sink_dyn: Arc<dyn AsyncWriteSink> = Arc::new(sink);
     let resp = process_message(
         &filter,
-        &Metrics::default(),
-        &Directives::default(),
-        None,
+        &Observe::default(),
         Some(sink_dyn.as_ref()),
         &mut state,
         headers_msg(
@@ -625,13 +516,11 @@ async fn sync_write_is_unaffected_by_a_configured_sink() {
     // A normal write (no write-mode header) still forwards upstream even when a sink
     // is configured — async is strictly opt-in per request.
     let filter = filter();
-    let metrics = Metrics::default();
+    let observe = Observe::default();
     let mut state = StreamState::default();
     let _ = process_message(
         &filter,
-        &metrics,
-        &Directives::default(),
-        None,
+        &observe,
         None,
         &mut state,
         headers_msg(
@@ -644,16 +533,7 @@ async fn sync_write_is_unaffected_by_a_configured_sink() {
         ),
     )
     .await;
-    let resp = process_message(
-        &filter,
-        &metrics,
-        &Directives::default(),
-        None,
-        None,
-        &mut state,
-        body_msg(br#"{"k":1}"#),
-    )
-    .await;
+    let resp = process_message(&filter, &observe, None, &mut state, body_msg(br#"{"k":1}"#)).await;
     // Forwarded upstream: a RequestBody response with mutations, not a 202.
     assert!(matches!(resp.response, Some(Resp::RequestBody(_))));
 }

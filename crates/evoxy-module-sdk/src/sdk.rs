@@ -21,7 +21,7 @@ use envoy_proxy_dynamic_modules_rust_sdk::{
     HttpFilterConfig, NewHttpFilterConfigFunction, NEW_HTTP_FILTER_CONFIG_FUNCTION,
 };
 use evoxy_abi::{FilterRequest, HttpVersion, MtlsIdentity};
-use evoxy_filter::{EnvoyActions, FilterDecision};
+use evoxy_filter::{EnvoyActions, FilterDecision, Observe, ObserveConfig, DECISION_HEADER};
 use osproxy_tenancy::Router;
 use tokio::runtime::Runtime;
 
@@ -66,7 +66,10 @@ where
         .enable_all()
         .build()
         .ok()?;
-    let module = Module::new(factory(&config), runtime.handle().clone());
+    // The observe surface reads its reserved keys (`admin_token`, `emit_decision`)
+    // from the same `filter_config` blob, so admin/observability is config-only.
+    let observe = Observe::from_config(&ObserveConfig::from_json(&config));
+    let module = Module::new(factory(&config), runtime.handle().clone()).with_observe(observe);
     Some(Box::new(EvoxyConfig {
         shared: Arc::new(Shared {
             _runtime: runtime,
@@ -129,6 +132,13 @@ where
                 )
             })
             .collect();
+        // The reserved introspection paths (metrics / explain / admin) are answered
+        // by the module itself, short-circuited before any routing — riding Envoy's
+        // own port, no second server.
+        if let Some(reply) = self.shared.module.reserved_reply(&self.headers) {
+            envoy.send_response(u32::from(reply.status), Vec::new(), Some(&reply.body), None);
+            return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue;
+        }
         if end_of_stream {
             // No body (a read): run the brain now.
             self.process(envoy, Vec::new());
@@ -170,9 +180,14 @@ where
 
     fn on_response_headers(
         &mut self,
-        _envoy: &mut EHF,
+        envoy: &mut EHF,
         end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_response_headers_status {
+        // Surface the shape-only routing decision (M7) as a response header, unless an
+        // operator has silenced it via the directive plane.
+        if let Some(shape) = self.shared.module.decision_header(&self.headers) {
+            envoy.set_response_header(DECISION_HEADER, shape.as_bytes());
+        }
         if end_of_stream {
             // No body to reshape (e.g. a bodyless response); let it through.
             abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
@@ -214,11 +229,17 @@ impl<R> EvoxyFilter<R>
 where
     R: Router + Send + Sync + 'static,
 {
-    /// Build the request, run the brain, and apply the recorded effects.
+    /// Build the request, run the brain, and apply the recorded effects. Tally the
+    /// outcome (forwarded vs. fail-closed) for `/_evoxy/metrics` — this is the request
+    /// finalization point (reads at the header phase, writes after the body buffers),
+    /// so it counts once; the header-phase `route_headers` for a write does not.
     fn process<EHF: EnvoyHttpFilter>(&self, envoy: &mut EHF, body: Vec<u8>) {
         let req = build_request(&self.headers, body.clone());
         let mut actions = SdkActions::new(body);
-        let _decision = self.shared.module.on_request(&req, &mut actions);
+        match self.shared.module.on_request(&req, &mut actions) {
+            FilterDecision::ContinueUpstream => self.shared.module.record_routed(),
+            FilterDecision::StoppedWithLocalReply => self.shared.module.record_rejected(),
+        }
         actions.apply(envoy);
     }
 }

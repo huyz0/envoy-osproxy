@@ -10,9 +10,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::directives::Directives;
+use evoxy_filter::{Observe, ObserveConfig};
+
 use crate::extproc::{ProcessingRequest, ProcessingResponse};
-use crate::metrics::Metrics;
 use crate::{process_message, AsyncWriteSink, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 /// The generated tonic server wrapper, re-exported so a binary can mount the
@@ -23,9 +23,7 @@ pub use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server
 /// one downstream request's phases; state is per-stream.
 pub struct ExtProcService<R> {
     filter: Arc<Filter<R>>,
-    metrics: Arc<Metrics>,
-    directives: Arc<Directives>,
-    admin_token: Option<Arc<str>>,
+    observe: Arc<Observe>,
     async_sink: Option<Arc<dyn AsyncWriteSink>>,
     max_request_body_bytes: usize,
 }
@@ -35,9 +33,7 @@ impl<R> Clone for ExtProcService<R> {
     fn clone(&self) -> Self {
         Self {
             filter: self.filter.clone(),
-            metrics: self.metrics.clone(),
-            directives: self.directives.clone(),
-            admin_token: self.admin_token.clone(),
+            observe: self.observe.clone(),
             async_sink: self.async_sink.clone(),
             max_request_body_bytes: self.max_request_body_bytes,
         }
@@ -57,9 +53,7 @@ impl<R: Router> ExtProcService<R> {
     pub fn new(filter: Filter<R>) -> Self {
         Self {
             filter: Arc::new(filter),
-            metrics: Arc::new(Metrics::default()),
-            directives: Arc::new(Directives::default()),
-            admin_token: None,
+            observe: Arc::new(Observe::default()),
             async_sink: None,
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
@@ -74,10 +68,21 @@ impl<R: Router> ExtProcService<R> {
     }
 
     /// Enable the runtime directive plane (`/_evoxy/admin/directives`) behind this
-    /// bearer token. Without it the plane fails closed `403` — off by default.
+    /// bearer token. Without it the plane fails closed `403` — off by default. (The
+    /// module backend enables it from `filter_config` instead; ext_proc has no such
+    /// blob, so the token is set here, typically from an env var.)
     #[must_use]
-    pub fn with_admin_token(mut self, token: impl Into<Arc<str>>) -> Self {
-        self.admin_token = Some(token.into());
+    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
+        self.observe = Arc::new(Observe::default().with_admin_token(token));
+        self
+    }
+
+    /// Configure the whole observe surface (the directive-plane token and the initial
+    /// decision-header state) from an [`ObserveConfig`] — the config-driven path,
+    /// parity with the module reading the same keys from `filter_config`.
+    #[must_use]
+    pub fn with_observe_config(mut self, config: &ObserveConfig) -> Self {
+        self.observe = Arc::new(Observe::from_config(config));
         self
     }
 
@@ -104,9 +109,7 @@ impl<R: Router> ExternalProcessor for ExtProcService<R> {
     ) -> Result<Response<Self::ProcessStream>, Status> {
         let mut inbound = request.into_inner();
         let filter = self.filter.clone();
-        let metrics = self.metrics.clone();
-        let directives = self.directives.clone();
-        let admin_token = self.admin_token.clone();
+        let observe = self.observe.clone();
         let async_sink = self.async_sink.clone();
         let max_request_body_bytes = self.max_request_body_bytes;
         let (tx, rx) = mpsc::channel(16);
@@ -120,9 +123,7 @@ impl<R: Router> ExternalProcessor for ExtProcService<R> {
                     Ok(Some(req)) => {
                         let resp = process_message(
                             &filter,
-                            &metrics,
-                            &directives,
-                            admin_token.as_deref(),
+                            &observe,
                             async_sink.as_deref(),
                             &mut state,
                             req,

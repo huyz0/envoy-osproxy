@@ -14,16 +14,14 @@
 #![deny(missing_docs)]
 // JUSTIFY: the ext_proc service's single request/response narrative —
 // `process_message`'s phase dispatch plus the response builders it hands back
-// (route mutation, response reshape, and the reserved admin surfaces it answers:
-// /metrics, /explain, /admin/directives). The stateful bits already live in their
-// own modules (actions/convert/metrics/directives); what remains is the one
-// message-handling flow, which reads worse split mid-`match`.
+// (route mutation, response reshape, async-write dispatch). The observe/admin
+// surfaces and the per-request effects already live in their own modules
+// (actions/convert/asyncwrite and the shared evoxy-filter `observe`); what remains
+// is the one message-handling flow, which reads worse split mid-`match`.
 
 mod actions;
 mod asyncwrite;
 mod convert;
-mod directives;
-mod metrics;
 mod service;
 
 /// The generated Envoy ext_proc v3 types.
@@ -34,16 +32,14 @@ pub use asyncwrite::{AsyncWriteSink, WRITE_MODE_HEADER};
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
-use directives::{constant_time_eq, Directives, ADMIN_PATH};
 use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
 use envoy_types::pb::envoy::r#type::v3::HttpStatus;
-use evoxy_filter::Filter;
+use evoxy_filter::{Filter, ImmediateReply, Observe, DECISION_HEADER};
 use extproc::processing_request::Request as Req;
 use extproc::processing_response::Response as Resp;
 use extproc::{
     BodyResponse, HeadersResponse, ImmediateResponse, ProcessingRequest, ProcessingResponse,
 };
-use metrics::{Metrics, METRICS_PATH};
 use osproxy_tenancy::Router;
 
 /// Default cap on a request body the service will buffer and transform, bounding
@@ -81,9 +77,7 @@ impl Default for StreamState {
 /// (a headerless request — a read — is resolved at the headers phase).
 async fn process_message<R: Router>(
     filter: &Filter<R>,
-    metrics: &Metrics,
-    directives: &Directives,
-    admin_token: Option<&str>,
+    observe: &Observe,
     async_sink: Option<&dyn AsyncWriteSink>,
     state: &mut StreamState,
     request: ProcessingRequest,
@@ -91,18 +85,16 @@ async fn process_message<R: Router>(
     match request.request {
         Some(Req::RequestHeaders(headers)) => {
             state.headers = convert::extract_headers(&headers);
-            // The reserved admin paths (M7) are answered by the filter itself,
-            // short-circuited before any routing.
-            if let Some(resp) =
-                reserved_response(filter, metrics, directives, admin_token, &state.headers).await
-            {
-                return resp;
+            // The reserved introspection paths (M7) are answered by the filter
+            // itself, short-circuited before any routing.
+            if let Some(reply) = observe.reserved_reply(filter, &state.headers).await {
+                return immediate_from_reply(&reply);
             }
             if headers.end_of_stream {
                 // A bodyless write (e.g. delete-by-id): async mode queues it here.
                 dispatch_write(
                     filter,
-                    metrics,
+                    observe,
                     async_sink,
                     state.headers.clone(),
                     Vec::new(),
@@ -121,12 +113,12 @@ async fn process_message<R: Router>(
             // Bound the working set: the transform holds the whole body, so refuse
             // an over-cap body up front (fail-closed) rather than allocate for it.
             if body.body.len() > state.max_request_body_bytes {
-                metrics.record_rejected();
+                observe.record_rejected();
                 return payload_too_large();
             }
             dispatch_write(
                 filter,
-                metrics,
+                observe,
                 async_sink,
                 state.headers.clone(),
                 body.body,
@@ -138,15 +130,10 @@ async fn process_message<R: Router>(
         // view. Headers just continue; the body is shaped (strip injected fields,
         // map physical ids back to logical) using the buffered request headers.
         Some(Req::ResponseHeaders(_)) => {
-            // Surface the shape-only routing decision (M7) as a response header,
-            // the "why did this route here" the extension knows and Envoy cannot —
-            // unless an operator has silenced it via the directive plane.
-            if directives.emit_decision() {
-                let req = convert::filter_request(state.headers.clone(), Vec::new());
-                response_headers(filter.decision_shape(&req).await)
-            } else {
-                response_headers(None)
-            }
+            // Surface the shape-only routing decision (M7) as a response header, the
+            // "why did this route here" the extension knows and Envoy cannot — unless
+            // an operator has silenced it via the directive plane.
+            response_headers(observe.decision_header(filter, &state.headers).await)
         }
         Some(Req::ResponseBody(body)) => {
             let req = convert::filter_request(state.headers.clone(), Vec::new());
@@ -160,32 +147,17 @@ async fn process_message<R: Router>(
     }
 }
 
-/// The reserved admin paths, answered by the filter itself (M7): `/_evoxy/metrics`
-/// (shape-only counters), `/_evoxy/admin/directives` (token-gated runtime "act"),
-/// and `/_evoxy/explain/<target>` (shape-only routing dry-run). Returns the
-/// immediate response for one of those, or `None` for a normal data-plane request.
-async fn reserved_response<R: Router>(
-    filter: &Filter<R>,
-    metrics: &Metrics,
-    directives: &Directives,
-    admin_token: Option<&str>,
-    headers: &[(String, String)],
-) -> Option<ProcessingResponse> {
-    if reserved_path(headers) == METRICS_PATH {
-        return Some(metrics_response(metrics));
-    }
-    if reserved_path(headers) == ADMIN_PATH {
-        return Some(admin_response(directives, admin_token, headers));
-    }
-    if let Some(target) = explain_target(headers) {
-        let req = convert::filter_request(with_path(headers.to_vec(), &target), Vec::new());
-        return Some(explain_response(filter.explain(&req).await));
-    }
-    None
+/// Render a backend-neutral [`ImmediateReply`] (from the shared observe surface) as
+/// an ext_proc immediate response.
+fn immediate_from_reply(reply: &ImmediateReply) -> ProcessingResponse {
+    wrap(Resp::ImmediateResponse(ImmediateResponse {
+        status: Some(HttpStatus {
+            code: i32::from(reply.status),
+        }),
+        body: reply.body.clone(),
+        ..Default::default()
+    }))
 }
-
-/// The shape-only routing-decision observability header (M7).
-const DECISION_HEADER: &str = "x-evoxy-decision";
 
 /// Build the response-headers-phase reply: add the shape-only decision header when
 /// the request resolved, else continue unchanged.
@@ -262,7 +234,7 @@ enum Phase {
 /// the outcome (routed vs. fail-closed) for `/metrics`.
 async fn finalize<R: Router>(
     filter: &Filter<R>,
-    metrics: &Metrics,
+    observe: &Observe,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     phase: Phase,
@@ -274,7 +246,7 @@ async fn finalize<R: Router>(
     let _decision = filter.handle(&req, &mut actions).await;
     match actions.finish(&orig_method, &orig_path) {
         Ok(common) => {
-            metrics.record_routed();
+            observe.record_routed();
             wrap(match phase {
                 Phase::Headers => Resp::RequestHeaders(HeadersResponse {
                     response: Some(common),
@@ -285,7 +257,7 @@ async fn finalize<R: Router>(
             })
         }
         Err(immediate) => {
-            metrics.record_rejected();
+            observe.record_rejected();
             wrap(Resp::ImmediateResponse(immediate))
         }
     }
@@ -295,16 +267,16 @@ async fn finalize<R: Router>(
 /// durably and answers `202`; otherwise the normal transform-and-forward `finalize`.
 async fn dispatch_write<R: Router>(
     filter: &Filter<R>,
-    metrics: &Metrics,
+    observe: &Observe,
     async_sink: Option<&dyn AsyncWriteSink>,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     phase: Phase,
 ) -> ProcessingResponse {
     if asyncwrite::wants_async(&headers) {
-        finalize_async(filter, metrics, async_sink, headers, body).await
+        finalize_async(filter, observe, async_sink, headers, body).await
     } else {
-        finalize(filter, metrics, headers, body, phase).await
+        finalize(filter, observe, headers, body, phase).await
     }
 }
 
@@ -314,7 +286,7 @@ async fn dispatch_write<R: Router>(
 /// sink configured, or an unacknowledged produce.
 async fn finalize_async<R: Router>(
     filter: &Filter<R>,
-    metrics: &Metrics,
+    observe: &Observe,
     async_sink: Option<&dyn AsyncWriteSink>,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -322,12 +294,12 @@ async fn finalize_async<R: Router>(
     let req = convert::filter_request(headers, body);
     // Async mode is meaningful only for writes; a read cannot be `202`-queued.
     if !filter.is_write(&req) {
-        metrics.record_rejected();
+        observe.record_rejected();
         return asyncwrite::read_unsupported();
     }
     // No sink configured: refuse rather than silently fall back to a sync write.
     let Some(sink) = async_sink else {
-        metrics.record_rejected();
+        observe.record_rejected();
         return asyncwrite::async_unavailable();
     };
 
@@ -339,7 +311,7 @@ async fn finalize_async<R: Router>(
     let (_method, path, body) = match actions.transformed(&orig_method, &orig_path) {
         Ok(parts) => parts,
         Err(immediate) => {
-            metrics.record_rejected();
+            observe.record_rejected();
             return wrap(Resp::ImmediateResponse(immediate));
         }
     };
@@ -347,122 +319,12 @@ async fn finalize_async<R: Router>(
     // The broker must acknowledge before we answer `202`; otherwise refuse with
     // `503`, never a false `202`.
     if sink.produce_acked(&path, &body).await.is_ok() {
-        metrics.record_routed();
+        observe.record_routed();
         asyncwrite::accepted(&asyncwrite::op_id(&path, &body))
     } else {
-        metrics.record_rejected();
+        observe.record_rejected();
         asyncwrite::fanout_unavailable()
     }
-}
-
-/// The request `:path` (query stripped), for the reserved-path check.
-fn reserved_path(headers: &[(String, String)]) -> &str {
-    headers
-        .iter()
-        .find(|(k, _)| k == ":path")
-        .map_or("", |(_, v)| v.split('?').next().unwrap_or(""))
-}
-
-/// The `/metrics` reply: a shape-only snapshot as a `200` immediate response,
-/// served by the filter itself (no second server, rides Envoy's port).
-fn metrics_response(metrics: &Metrics) -> ProcessingResponse {
-    wrap(Resp::ImmediateResponse(ImmediateResponse {
-        status: Some(HttpStatus { code: 200 }),
-        body: metrics.snapshot_json(),
-        ..Default::default()
-    }))
-}
-
-/// The reserved explain prefix: `/_evoxy/explain/<target path>` explains how
-/// `<target path>` would route.
-const EXPLAIN_PREFIX: &str = "/_evoxy/explain";
-
-/// The target path an explain request names, or `None` if this is not an explain
-/// request. `/_evoxy/explain/orders/_search` → `/orders/_search`.
-fn explain_target(headers: &[(String, String)]) -> Option<String> {
-    reserved_path(headers)
-        .strip_prefix(EXPLAIN_PREFIX)
-        .filter(|rest| rest.starts_with('/'))
-        .map(str::to_owned)
-}
-
-/// The headers with `:path` replaced by `path` (to explain a different request).
-fn with_path(mut headers: Vec<(String, String)>, path: &str) -> Vec<(String, String)> {
-    for (key, value) in &mut headers {
-        if key == ":path" {
-            path.clone_into(value);
-        }
-    }
-    headers
-}
-
-/// The `/explain` reply: the shape-only routing dry-run as a `200` immediate
-/// response.
-fn explain_response(body: String) -> ProcessingResponse {
-    wrap(Resp::ImmediateResponse(ImmediateResponse {
-        status: Some(HttpStatus { code: 200 }),
-        body: body.into_bytes(),
-        ..Default::default()
-    }))
-}
-
-/// The token-gated directive-plane reply (M7 "act"): apply any directives named in
-/// the query, then return the current shape-only snapshot. Requires
-/// `Authorization: Bearer <token>` matching the configured admin token; without a
-/// configured token, or on a mismatch, it fails closed `403` — the plane is off
-/// unless deliberately enabled and correctly authenticated.
-fn admin_response(
-    directives: &Directives,
-    admin_token: Option<&str>,
-    headers: &[(String, String)],
-) -> ProcessingResponse {
-    let authorized = admin_token.is_some_and(|token| {
-        bearer(headers).is_some_and(|got| constant_time_eq(got.as_bytes(), token.as_bytes()))
-    });
-    if !authorized {
-        return admin_error(403, "unauthorized");
-    }
-    if let Some(query) = raw_query(headers) {
-        directives.apply_query(query);
-    }
-    wrap(Resp::ImmediateResponse(ImmediateResponse {
-        status: Some(HttpStatus { code: 200 }),
-        body: directives.snapshot_json(),
-        ..Default::default()
-    }))
-}
-
-/// A shape-only fail-closed admin reply.
-fn admin_error(status: u16, code: &str) -> ProcessingResponse {
-    wrap(Resp::ImmediateResponse(ImmediateResponse {
-        status: Some(HttpStatus {
-            code: i32::from(status),
-        }),
-        body: format!("{{\"error\":\"{code}\"}}").into_bytes(),
-        ..Default::default()
-    }))
-}
-
-/// The bearer token from `Authorization: Bearer <token>` (case-insensitive scheme).
-fn bearer(headers: &[(String, String)]) -> Option<&str> {
-    let auth = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        .map(|(_, v)| v.as_str())?;
-    let (scheme, token) = auth.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then_some(token.trim())
-}
-
-/// The raw `?query` of the request `:path` (unlike [`reserved_path`], which strips
-/// it), for the directive plane's query settings.
-fn raw_query(headers: &[(String, String)]) -> Option<&str> {
-    headers
-        .iter()
-        .find(|(k, _)| k == ":path")
-        .and_then(|(_, v)| v.split_once('?'))
-        .map(|(_, query)| query)
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.

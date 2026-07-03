@@ -27,7 +27,7 @@
 //! `examples/custom-module`.
 
 use evoxy_abi::FilterRequest;
-use evoxy_filter::{EnvoyActions, FilterDecision, ReferenceTenancy};
+use evoxy_filter::{EnvoyActions, FilterDecision, ImmediateReply, Observe, ReferenceTenancy};
 use osproxy_tenancy::{Router, TenancyRouter};
 use tokio::runtime::Handle;
 
@@ -35,20 +35,62 @@ pub mod sdk;
 
 // Re-exported so a cdylib can build its `Filter` without a separate `evoxy-filter`
 // dependency: `evoxy_module_sdk::Filter::new(router)`. `FilterConfig` lets a custom
-// module reuse the reference config parser.
-pub use evoxy_filter::{Filter, FilterConfig};
+// module reuse the reference config parser; `ObserveConfig` parses the reserved
+// observability keys (`admin_token`, `emit_decision`) from the same blob.
+pub use evoxy_filter::{Filter, FilterConfig, ObserveConfig};
 
-/// A loaded module: the request-handling brain plus the runtime handle used to
-/// drive its async work from Envoy's synchronous filter callbacks.
+/// A loaded module: the request-handling brain, the shared observe surface (the
+/// reserved introspection paths and the directive plane), and the runtime handle
+/// used to drive their async work from Envoy's synchronous filter callbacks.
 pub struct Module<R> {
     filter: Filter<R>,
+    observe: Observe,
     runtime: Handle,
 }
 
 impl<R: Router> Module<R> {
-    /// Build a module over a configured [`Filter`] and a runtime handle.
+    /// Build a module over a configured [`Filter`] and a runtime handle, with a
+    /// default observe surface (metrics and explain on, directive plane fail-closed).
+    /// Use [`with_observe`](Self::with_observe) to enable the token-gated plane.
     pub fn new(filter: Filter<R>, runtime: Handle) -> Self {
-        Self { filter, runtime }
+        Self {
+            filter,
+            observe: Observe::default(),
+            runtime,
+        }
+    }
+
+    /// Set the observe surface (from the `filter_config` reserved keys, so the
+    /// directive plane is enabled config-only, like the tenancy).
+    #[must_use]
+    pub fn with_observe(mut self, observe: Observe) -> Self {
+        self.observe = observe;
+        self
+    }
+
+    /// The reserved introspection reply for this request (`/_evoxy/metrics`,
+    /// `/_evoxy/explain/...`, `/_evoxy/admin/directives`), or `None` for a normal
+    /// data-plane request. The binding renders it via `send_response`.
+    pub fn reserved_reply(&self, headers: &[(String, String)]) -> Option<ImmediateReply> {
+        self.runtime
+            .block_on(self.observe.reserved_reply(&self.filter, headers))
+    }
+
+    /// The shape-only `x-evoxy-decision` header value for a response, or `None` when
+    /// the directive plane has silenced it.
+    pub fn decision_header(&self, headers: &[(String, String)]) -> Option<String> {
+        self.runtime
+            .block_on(self.observe.decision_header(&self.filter, headers))
+    }
+
+    /// Record a request forwarded upstream, for `/_evoxy/metrics`.
+    pub fn record_routed(&self) {
+        self.observe.record_routed();
+    }
+
+    /// Record a request answered with a fail-closed immediate reply.
+    pub fn record_rejected(&self) {
+        self.observe.record_rejected();
     }
 
     /// Handle one buffered request, driving the async pipeline to completion on

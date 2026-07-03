@@ -142,9 +142,13 @@ These apply across all isolation models:
 | `inject_field` | string | `_tenant` | injected isolation field (`shared_index`) |
 | `id_template` | string | `{partition}:{body.id}` | partition-scoped doc id (`shared_index`) |
 | `routing` | bool | `true` | set `?routing=` in `shared_index` mode |
+| `admin_token` | string | none | bearer token that enables the `/_evoxy/admin/directives` plane (see [Admin and observability](07-observability.md)) |
+| `emit_decision` | bool | `true` | initial state of the `x-evoxy-decision` response header |
 
 Unknown keys are ignored, and any missing key falls back to its default, so a bare
-`{}` is a runnable single-cluster passthrough.
+`{}` is a runnable single-cluster passthrough. `admin_token`/`emit_decision` are the
+reserved observability keys; they enable the introspection/admin surfaces (on the
+module) from the same blob, so admin is config-only too.
 
 ## What still needs a custom SPI
 
