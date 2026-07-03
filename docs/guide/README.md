@@ -4,7 +4,8 @@ Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
 Envoy, without forking, patching, or recompiling Envoy. Point a standard
 `envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
 per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
-demux, epoch-gated migration, shape-only observability, and async fan-out.
+demux, epoch-gated migration, shape-only observability, traffic capture, and (on
+ext_proc) async write mode.
 
 ## An extension of osproxy that runs inside Envoy
 
@@ -75,4 +76,5 @@ Both are verified end to end through a stock, unmodified Envoy. The
 - [Admin and observability](07-observability.md) covers the shape-only metrics,
   decision header, explain dry-run, and the runtime directive plane.
 - [Capture and async fan-out](09-capture-and-fanout.md) mirrors traffic to a bridge
-  and on to Kafka, no code.
+  and on to Kafka with no code, and covers ext_proc async write mode (`202` + durable
+  fan-out).

@@ -20,6 +20,7 @@
 // message-handling flow, which reads worse split mid-`match`.
 
 mod actions;
+mod asyncwrite;
 mod convert;
 mod directives;
 mod metrics;
@@ -29,6 +30,7 @@ mod service;
 pub(crate) use envoy_types::pb::envoy::service::ext_proc::v3 as extproc;
 
 pub use actions::CLUSTER_HEADER;
+pub use asyncwrite::{AsyncWriteSink, WRITE_MODE_HEADER};
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
@@ -82,6 +84,7 @@ async fn process_message<R: Router>(
     metrics: &Metrics,
     directives: &Directives,
     admin_token: Option<&str>,
+    async_sink: Option<&dyn AsyncWriteSink>,
     state: &mut StreamState,
     request: ProcessingRequest,
 ) -> ProcessingResponse {
@@ -96,9 +99,11 @@ async fn process_message<R: Router>(
                 return resp;
             }
             if headers.end_of_stream {
-                finalize(
+                // A bodyless write (e.g. delete-by-id): async mode queues it here.
+                dispatch_write(
                     filter,
                     metrics,
+                    async_sink,
                     state.headers.clone(),
                     Vec::new(),
                     Phase::Headers,
@@ -119,9 +124,10 @@ async fn process_message<R: Router>(
                 metrics.record_rejected();
                 return payload_too_large();
             }
-            finalize(
+            dispatch_write(
                 filter,
                 metrics,
+                async_sink,
                 state.headers.clone(),
                 body.body,
                 Phase::Body,
@@ -285,6 +291,70 @@ async fn finalize<R: Router>(
     }
 }
 
+/// Dispatch a write phase: async mode (ADR-010) produces the transformed request
+/// durably and answers `202`; otherwise the normal transform-and-forward `finalize`.
+async fn dispatch_write<R: Router>(
+    filter: &Filter<R>,
+    metrics: &Metrics,
+    async_sink: Option<&dyn AsyncWriteSink>,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    phase: Phase,
+) -> ProcessingResponse {
+    if asyncwrite::wants_async(&headers) {
+        finalize_async(filter, metrics, async_sink, headers, body).await
+    } else {
+        finalize(filter, metrics, headers, body, phase).await
+    }
+}
+
+/// The async-write path (ADR-010): run the brain to get the physical request, then
+/// produce it durably and answer `202` instead of forwarding. Refuses (`503`/`400`)
+/// rather than lie when it cannot honor the async contract: no write endpoint, no
+/// sink configured, or an unacknowledged produce.
+async fn finalize_async<R: Router>(
+    filter: &Filter<R>,
+    metrics: &Metrics,
+    async_sink: Option<&dyn AsyncWriteSink>,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> ProcessingResponse {
+    let req = convert::filter_request(headers, body);
+    // Async mode is meaningful only for writes; a read cannot be `202`-queued.
+    if !filter.is_write(&req) {
+        metrics.record_rejected();
+        return asyncwrite::read_unsupported();
+    }
+    // No sink configured: refuse rather than silently fall back to a sync write.
+    let Some(sink) = async_sink else {
+        metrics.record_rejected();
+        return asyncwrite::async_unavailable();
+    };
+
+    let orig_method = req.method.clone();
+    let orig_path = req.path().to_owned();
+    let mut actions = ExtProcActions::default();
+    let _decision = filter.handle(&req, &mut actions).await;
+    // A fail-closed transform (unresolved/rejected) never becomes an accepted write.
+    let (_method, path, body) = match actions.transformed(&orig_method, &orig_path) {
+        Ok(parts) => parts,
+        Err(immediate) => {
+            metrics.record_rejected();
+            return wrap(Resp::ImmediateResponse(immediate));
+        }
+    };
+
+    // The broker must acknowledge before we answer `202`; otherwise refuse with
+    // `503`, never a false `202`.
+    if sink.produce_acked(&path, &body).await.is_ok() {
+        metrics.record_routed();
+        asyncwrite::accepted(&asyncwrite::op_id(&path, &body))
+    } else {
+        metrics.record_rejected();
+        asyncwrite::fanout_unavailable()
+    }
+}
+
 /// The request `:path` (query stripped), for the reserved-path check.
 fn reserved_path(headers: &[(String, String)]) -> &str {
     headers
@@ -396,7 +466,7 @@ fn raw_query(headers: &[(String, String)]) -> Option<&str> {
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.
-fn wrap(response: Resp) -> ProcessingResponse {
+pub(crate) fn wrap(response: Resp) -> ProcessingResponse {
     ProcessingResponse {
         response: Some(response),
         ..Default::default()

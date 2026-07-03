@@ -13,7 +13,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::directives::Directives;
 use crate::extproc::{ProcessingRequest, ProcessingResponse};
 use crate::metrics::Metrics;
-use crate::{process_message, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
+use crate::{process_message, AsyncWriteSink, StreamState, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 /// The generated tonic server wrapper, re-exported so a binary can mount the
 /// service: `Server::builder().add_service(ExternalProcessorServer::new(svc))`.
@@ -26,6 +26,7 @@ pub struct ExtProcService<R> {
     metrics: Arc<Metrics>,
     directives: Arc<Directives>,
     admin_token: Option<Arc<str>>,
+    async_sink: Option<Arc<dyn AsyncWriteSink>>,
     max_request_body_bytes: usize,
 }
 
@@ -37,6 +38,7 @@ impl<R> Clone for ExtProcService<R> {
             metrics: self.metrics.clone(),
             directives: self.directives.clone(),
             admin_token: self.admin_token.clone(),
+            async_sink: self.async_sink.clone(),
             max_request_body_bytes: self.max_request_body_bytes,
         }
     }
@@ -58,6 +60,7 @@ impl<R: Router> ExtProcService<R> {
             metrics: Arc::new(Metrics::default()),
             directives: Arc::new(Directives::default()),
             admin_token: None,
+            async_sink: None,
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
     }
@@ -77,6 +80,18 @@ impl<R: Router> ExtProcService<R> {
         self.admin_token = Some(token.into());
         self
     }
+
+    /// Enable async write mode (ADR-010): a write carrying
+    /// `x-evoxy-write-mode: async` is produced durably to this sink and answered
+    /// `202`, instead of forwarding to OpenSearch. Any [`Bridge`](evoxy_bridge::Bridge)
+    /// over an [`AckProducer`](osproxy_kafka::AckProducer) is a sink. Without one the
+    /// service refuses async requests with `503` (it never silently downgrades to a
+    /// sync write). Sync requests are unaffected.
+    #[must_use]
+    pub fn with_async_write_sink(mut self, sink: Arc<dyn AsyncWriteSink>) -> Self {
+        self.async_sink = Some(sink);
+        self
+    }
 }
 
 #[tonic::async_trait]
@@ -92,6 +107,7 @@ impl<R: Router> ExternalProcessor for ExtProcService<R> {
         let metrics = self.metrics.clone();
         let directives = self.directives.clone();
         let admin_token = self.admin_token.clone();
+        let async_sink = self.async_sink.clone();
         let max_request_body_bytes = self.max_request_body_bytes;
         let (tx, rx) = mpsc::channel(16);
 
@@ -107,6 +123,7 @@ impl<R: Router> ExternalProcessor for ExtProcService<R> {
                             &metrics,
                             &directives,
                             admin_token.as_deref(),
+                            async_sink.as_deref(),
                             &mut state,
                             req,
                         )

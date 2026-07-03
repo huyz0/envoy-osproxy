@@ -55,6 +55,24 @@ fn overwrite(name: &str, value: &str) -> HeaderValueOption {
 }
 
 impl ExtProcActions {
+    /// The physical request the brain transformed `(method, path, body)`, for the
+    /// async-write path to produce instead of forwarding. A field the brain left
+    /// unchanged falls back to the original request line / an empty body. `Err` is
+    /// the fail-closed immediate reply the brain sent (an unresolved/rejected
+    /// request never becomes an accepted async write).
+    pub(crate) fn transformed(
+        self,
+        orig_method: &str,
+        orig_path: &str,
+    ) -> Result<(String, String, Vec<u8>), ImmediateResponse> {
+        if let Some(immediate) = self.immediate {
+            return Err(immediate);
+        }
+        let method = self.method.unwrap_or_else(|| orig_method.to_owned());
+        let path = self.path.unwrap_or_else(|| orig_path.to_owned());
+        Ok((method, path, self.body.unwrap_or_default()))
+    }
+
     /// Convert into the ext_proc `CommonResponse` mutations, or the immediate
     /// response if the brain sent a fail-closed reply. `orig_method`/`orig_path`
     /// are the request line as received, so an unchanged routing header is not

@@ -56,6 +56,7 @@ evoxy-abi = { path = "crates/evoxy-abi", version = "0.1.0" }
 evoxy-adapter = { path = "crates/evoxy-adapter", version = "0.1.0" }
 evoxy-route = { path = "crates/evoxy-route", version = "0.1.0" }
 evoxy-filter = { path = "crates/evoxy-filter", version = "0.1.0" }
+evoxy-bridge = { path = "crates/evoxy-bridge", version = "0.1.0" }
 # The NFR-P bench harness (LatencySummary / NfrProfile / judge / ScalabilityCurve)
 # — dev-only, owned here (osproxy's equivalent is unpublished), so the perf/scale
 # harnesses have no unpublished or path dependency.

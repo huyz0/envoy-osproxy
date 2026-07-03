@@ -257,6 +257,15 @@ impl<R: Router> Filter<R> {
         evoxy_route::shape_read_response(&self.router, &parts.ctx(), upstream_body).await
     }
 
+    /// Whether `req` targets a write endpoint (a mutation). Used by a backend that
+    /// gates a write-only feature (the ext_proc async-write mode) before running the
+    /// transform. An unclassifiable request (unsupported method) is not a write.
+    #[must_use]
+    pub fn is_write(&self, req: &FilterRequest) -> bool {
+        evoxy_adapter::RequestParts::from_filter(req, "")
+            .is_ok_and(|parts| parts.ctx().endpoint().is_write())
+    }
+
     /// A **shape-only** summary of the routing decision for `req` — the transform
     /// kind, migration phase, and isolation flag (no tenant values), for the
     /// backend to surface as an observability signal (M7). `None` if the request

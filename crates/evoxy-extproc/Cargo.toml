@@ -11,7 +11,11 @@ description = "The ext_proc backend: an Envoy External Processing gRPC service o
 [dependencies]
 evoxy-abi.workspace = true
 evoxy-filter.workspace = true
+evoxy-bridge.workspace = true
 osproxy-tenancy.workspace = true
+# The Kafka producer seam: `AckProducer`/`ProduceError` for the async-write sink
+# (the durable, acknowledged produce behind a `202`). No broker client, no crypto.
+osproxy-kafka.workspace = true
 envoy-types = "0.7"
 tonic = "0.14"
 prost = "0.14"
