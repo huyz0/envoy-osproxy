@@ -310,7 +310,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "custom-tenancy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "osproxy-core",
  "osproxy-spi",
@@ -454,14 +454,14 @@ dependencies = [
 
 [[package]]
 name = "evoxy-abi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "iai-callgrind",
 ]
 
 [[package]]
 name = "evoxy-adapter"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "evoxy-abi",
  "iai-callgrind",
@@ -472,11 +472,11 @@ dependencies = [
 
 [[package]]
 name = "evoxy-bench"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "evoxy-bridge"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "evoxy-filter",
  "osproxy-kafka",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "evoxy-extproc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "envoy-types",
  "evoxy-abi",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "evoxy-filter"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "evoxy-abi",
  "evoxy-adapter",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "evoxy-route"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "evoxy-abi",
  "evoxy-adapter",

@@ -29,7 +29,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.94"
 license = "Apache-2.0"
@@ -54,11 +54,11 @@ osproxy-kafka = "=1.0.2"
 # Internal crates. Each carries a `version` alongside `path` so `cargo publish`
 # rewrites the path dep to a real crates.io version (a version-less dep is rejected
 # at publish). Keep these in lockstep with `workspace.package.version` above.
-evoxy-abi = { path = "crates/evoxy-abi", version = "0.1.0" }
-evoxy-adapter = { path = "crates/evoxy-adapter", version = "0.1.0" }
-evoxy-route = { path = "crates/evoxy-route", version = "0.1.0" }
-evoxy-filter = { path = "crates/evoxy-filter", version = "0.1.0" }
-evoxy-bridge = { path = "crates/evoxy-bridge", version = "0.1.0" }
+evoxy-abi = { path = "crates/evoxy-abi", version = "1.0.0" }
+evoxy-adapter = { path = "crates/evoxy-adapter", version = "1.0.0" }
+evoxy-route = { path = "crates/evoxy-route", version = "1.0.0" }
+evoxy-filter = { path = "crates/evoxy-filter", version = "1.0.0" }
+evoxy-bridge = { path = "crates/evoxy-bridge", version = "1.0.0" }
 # The NFR-P bench harness (LatencySummary / NfrProfile / judge / ScalabilityCurve)
 # — dev-only, owned here (osproxy's equivalent is unpublished), so the perf/scale
 # harnesses have no unpublished or path dependency.
