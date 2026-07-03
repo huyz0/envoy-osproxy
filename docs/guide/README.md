@@ -4,8 +4,8 @@ Multi-tenant OpenSearch proxy capabilities delivered as an extension of a stock
 Envoy, without forking, patching, or recompiling Envoy. Point a standard
 `envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
 per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
-demux, epoch-gated migration, shape-only observability, traffic capture, and (on
-ext_proc) async write mode.
+demux, epoch-gated migration, shape-only observability, traffic capture, and async
+write mode.
 
 ## An extension of osproxy that runs inside Envoy
 

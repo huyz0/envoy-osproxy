@@ -5,4 +5,4 @@ target/
 crates/evoxy-module/Cargo.lock
 crates/evoxy-module-sdk/Cargo.lock
 examples/custom-module/Cargo.lock
-
+examples/async-module/Cargo.lock

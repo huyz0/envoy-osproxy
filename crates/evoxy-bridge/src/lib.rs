@@ -80,6 +80,21 @@ impl<P: Producer> Bridge<P> {
     }
 }
 
+/// A [`Bridge`] over an [`AckProducer`] is an `evoxy_filter::AsyncWriteSink`: it
+/// already awaits the broker ack, so a backend can drive an async write (ADR-010)
+/// straight through it. Lets the ext_proc service and the dynamic module answer `202`
+/// only after a durable produce.
+impl<P: AckProducer> evoxy_filter::AsyncWriteSink for Bridge<P> {
+    fn produce_acked<'a>(
+        &'a self,
+        path: &'a str,
+        body: &'a [u8],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ProduceError>> + Send + 'a>>
+    {
+        Box::pin(self.forward_acked(path, body))
+    }
+}
+
 impl<P: AckProducer> Bridge<P> {
     /// Produce one mirrored request and **await the broker acknowledgement** — the
     /// durable tier (the seam a spill buffer drains onto, since it must confirm

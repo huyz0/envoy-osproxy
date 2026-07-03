@@ -26,8 +26,12 @@
 //! `cdylib`. The Envoy SDK is pulled in transitively — you never name it. See
 //! `examples/custom-module`.
 
+use std::sync::Arc;
+
 use evoxy_abi::FilterRequest;
-use evoxy_filter::{EnvoyActions, FilterDecision, ImmediateReply, Observe, ReferenceTenancy};
+use evoxy_filter::{
+    wants_async, EnvoyActions, FilterDecision, ImmediateReply, Observe, ReferenceTenancy,
+};
 use osproxy_tenancy::{Router, TenancyRouter};
 use tokio::runtime::Handle;
 
@@ -36,26 +40,32 @@ pub mod sdk;
 // Re-exported so a cdylib can build its `Filter` without a separate `evoxy-filter`
 // dependency: `evoxy_module_sdk::Filter::new(router)`. `FilterConfig` lets a custom
 // module reuse the reference config parser; `ObserveConfig` parses the reserved
-// observability keys (`admin_token`, `emit_decision`) from the same blob.
+// observability keys (`admin_token`, `emit_decision`) from the same blob;
+// `AsyncWriteSink` is the async-write fan-out seam a `register_async!` module wires.
 pub use evoxy_filter::{Filter, FilterConfig, ObserveConfig};
+pub use evoxy_filter::{AsyncWriteSink, WRITE_MODE_HEADER};
 
 /// A loaded module: the request-handling brain, the shared observe surface (the
-/// reserved introspection paths and the directive plane), and the runtime handle
-/// used to drive their async work from Envoy's synchronous filter callbacks.
+/// reserved introspection paths and the directive plane), an optional async-write
+/// sink, and the runtime handle used to drive their async work from Envoy's
+/// synchronous filter callbacks.
 pub struct Module<R> {
     filter: Filter<R>,
     observe: Observe,
+    async_sink: Option<Arc<dyn AsyncWriteSink>>,
     runtime: Handle,
 }
 
 impl<R: Router> Module<R> {
     /// Build a module over a configured [`Filter`] and a runtime handle, with a
-    /// default observe surface (metrics and explain on, directive plane fail-closed).
-    /// Use [`with_observe`](Self::with_observe) to enable the token-gated plane.
+    /// default observe surface (metrics and explain on, directive plane fail-closed)
+    /// and async write mode off. Use [`with_observe`](Self::with_observe) /
+    /// [`with_async_sink`](Self::with_async_sink) to enable those.
     pub fn new(filter: Filter<R>, runtime: Handle) -> Self {
         Self {
             filter,
             observe: Observe::default(),
+            async_sink: None,
             runtime,
         }
     }
@@ -66,6 +76,33 @@ impl<R: Router> Module<R> {
     pub fn with_observe(mut self, observe: Observe) -> Self {
         self.observe = observe;
         self
+    }
+
+    /// Enable async write mode (ADR-010) by wiring a durable fan-out sink. A write
+    /// carrying `x-evoxy-write-mode: async` is then produced to the sink and answered
+    /// `202` instead of forwarding.
+    ///
+    /// Off by default, and deliberately so: awaiting the broker ack **blocks the
+    /// Envoy worker thread** the filter runs on (unlike the ext_proc sidecar, which
+    /// blocks only its own task), so enable it only when that trade is acceptable.
+    #[must_use]
+    pub fn with_async_sink(mut self, sink: Arc<dyn AsyncWriteSink>) -> Self {
+        self.async_sink = Some(sink);
+        self
+    }
+
+    /// If the request opts into async write mode, run the shared async-write contract
+    /// on the runtime and return the client reply; else `None`, so the caller
+    /// forwards normally. Blocks on the broker ack (see
+    /// [`with_async_sink`](Self::with_async_sink)).
+    pub fn async_write(&self, req: &FilterRequest) -> Option<ImmediateReply> {
+        if !wants_async(&req.headers) {
+            return None;
+        }
+        Some(
+            self.runtime
+                .block_on(self.filter.async_write(req, self.async_sink.as_deref())),
+        )
     }
 
     /// The reserved introspection reply for this request (`/_evoxy/metrics`,
@@ -159,6 +196,38 @@ macro_rules! register {
                 ::std::boxed::Box<dyn $crate::sdk::SdkHttpFilterConfig<$crate::sdk::FilterHandle>>,
             > {
                 $crate::sdk::new_config(filter_config, $factory)
+            }
+            $crate::sdk::install(__evoxy_new_config)
+        }
+    };
+}
+
+/// Like [`register!`], but also wires an **async write sink**, enabling async write
+/// mode (ADR-010) on the module. Give it two factories: the filter factory
+/// (`fn(&str) -> Filter<_>`, as for [`register!`]) and a sink factory
+/// (`fn(&str) -> Option<Arc<dyn AsyncWriteSink>>`) that builds a durable fan-out sink
+/// (a `Bridge` over an `AckProducer`) from Envoy's `filter_config` blob, or `None` to
+/// leave async off.
+///
+/// A write carrying `x-evoxy-write-mode: async` is then produced to the sink and
+/// answered `202`. Awaiting the broker ack **blocks the Envoy worker thread** the
+/// filter runs on, so enable this only when that trade is acceptable (see
+/// [`Module::with_async_sink`]).
+#[macro_export]
+macro_rules! register_async {
+    ($filter_factory:expr, $sink_factory:expr) => {
+        /// Envoy's module init entry point (async-write variant). Generated by
+        /// `evoxy_module_sdk::register_async!`.
+        #[no_mangle]
+        pub extern "C" fn envoy_dynamic_module_on_program_init() -> *const ::std::os::raw::c_char {
+            fn __evoxy_new_config(
+                _config: &mut $crate::sdk::ConfigHandle,
+                _filter_name: &str,
+                filter_config: &[u8],
+            ) -> ::core::option::Option<
+                ::std::boxed::Box<dyn $crate::sdk::SdkHttpFilterConfig<$crate::sdk::FilterHandle>>,
+            > {
+                $crate::sdk::new_config_async(filter_config, $filter_factory, $sink_factory)
             }
             $crate::sdk::install(__evoxy_new_config)
         }

@@ -20,7 +20,6 @@
 // is the one message-handling flow, which reads worse split mid-`match`.
 
 mod actions;
-mod asyncwrite;
 mod convert;
 mod service;
 
@@ -28,13 +27,13 @@ mod service;
 pub(crate) use envoy_types::pb::envoy::service::ext_proc::v3 as extproc;
 
 pub use actions::CLUSTER_HEADER;
-pub use asyncwrite::{AsyncWriteSink, WRITE_MODE_HEADER};
+pub use evoxy_filter::{AsyncWriteSink, WRITE_MODE_HEADER};
 pub use service::{ExtProcService, ExternalProcessorServer};
 
 use actions::ExtProcActions;
 use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
 use envoy_types::pb::envoy::r#type::v3::HttpStatus;
-use evoxy_filter::{Filter, ImmediateReply, Observe, DECISION_HEADER};
+use evoxy_filter::{wants_async, Filter, ImmediateReply, Observe, DECISION_HEADER};
 use extproc::processing_request::Request as Req;
 use extproc::processing_response::Response as Resp;
 use extproc::{
@@ -273,17 +272,17 @@ async fn dispatch_write<R: Router>(
     body: Vec<u8>,
     phase: Phase,
 ) -> ProcessingResponse {
-    if asyncwrite::wants_async(&headers) {
+    if wants_async(&headers) {
         finalize_async(filter, observe, async_sink, headers, body).await
     } else {
         finalize(filter, observe, headers, body, phase).await
     }
 }
 
-/// The async-write path (ADR-010): run the brain to get the physical request, then
-/// produce it durably and answer `202` instead of forwarding. Refuses (`503`/`400`)
-/// rather than lie when it cannot honor the async contract: no write endpoint, no
-/// sink configured, or an unacknowledged produce.
+/// The async-write path (ADR-010): delegate to the shared `Filter::async_write`
+/// contract and render its reply. A `2xx` is an accepted (durably queued) write; any
+/// other status is a fail-closed refusal (no write endpoint, no sink, or the broker
+/// did not acknowledge).
 async fn finalize_async<R: Router>(
     filter: &Filter<R>,
     observe: &Observe,
@@ -292,39 +291,13 @@ async fn finalize_async<R: Router>(
     body: Vec<u8>,
 ) -> ProcessingResponse {
     let req = convert::filter_request(headers, body);
-    // Async mode is meaningful only for writes; a read cannot be `202`-queued.
-    if !filter.is_write(&req) {
-        observe.record_rejected();
-        return asyncwrite::read_unsupported();
-    }
-    // No sink configured: refuse rather than silently fall back to a sync write.
-    let Some(sink) = async_sink else {
-        observe.record_rejected();
-        return asyncwrite::async_unavailable();
-    };
-
-    let orig_method = req.method.clone();
-    let orig_path = req.path().to_owned();
-    let mut actions = ExtProcActions::default();
-    let _decision = filter.handle(&req, &mut actions).await;
-    // A fail-closed transform (unresolved/rejected) never becomes an accepted write.
-    let (_method, path, body) = match actions.transformed(&orig_method, &orig_path) {
-        Ok(parts) => parts,
-        Err(immediate) => {
-            observe.record_rejected();
-            return wrap(Resp::ImmediateResponse(immediate));
-        }
-    };
-
-    // The broker must acknowledge before we answer `202`; otherwise refuse with
-    // `503`, never a false `202`.
-    if sink.produce_acked(&path, &body).await.is_ok() {
+    let reply = filter.async_write(&req, async_sink).await;
+    if (200..300).contains(&reply.status) {
         observe.record_routed();
-        asyncwrite::accepted(&asyncwrite::op_id(&path, &body))
     } else {
         observe.record_rejected();
-        asyncwrite::fanout_unavailable()
     }
+    immediate_from_reply(&reply)
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.

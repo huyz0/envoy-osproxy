@@ -11,9 +11,11 @@
 //! records the calls) and decoupled from the SDK's version/ABI.
 #![deny(missing_docs)]
 
+mod asyncwrite;
 mod observe;
 mod reference;
 
+pub use asyncwrite::{wants_async, AsyncWriteSink, ProduceError, WRITE_MODE_HEADER};
 pub use observe::{
     constant_time_eq, Directives, ImmediateReply, Metrics, Observe, ObserveConfig, ADMIN_PATH,
     DECISION_HEADER, EXPLAIN_PREFIX, METRICS_PATH,

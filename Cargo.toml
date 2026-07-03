@@ -24,6 +24,8 @@ exclude = [
     "crates/evoxy-module",
     # A custom-tenancy module cdylib built on the same glue — same libclang need.
     "examples/custom-module",
+    # The reference module with async write mode wired via register_async!.
+    "examples/async-module",
 ]
 
 [workspace.package]

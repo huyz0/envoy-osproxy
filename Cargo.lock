@@ -478,6 +478,7 @@ version = "0.1.0"
 name = "evoxy-bridge"
 version = "0.1.0"
 dependencies = [
+ "evoxy-filter",
  "osproxy-kafka",
  "tokio",
 ]
@@ -513,6 +514,7 @@ dependencies = [
  "evoxy-route",
  "iai-callgrind",
  "osproxy-core",
+ "osproxy-kafka",
  "osproxy-spi",
  "osproxy-tenancy",
  "serde_json",

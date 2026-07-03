@@ -76,12 +76,12 @@ fire-and-forget with no retry; durability (a write-ahead log, acknowledged produ
 lives in the bridge, which is why it is a separate service you control rather than
 filter code.
 
-## Async write mode (ext_proc only)
+## Async write mode
 
 Async write mode is the other thing you might mean by "async": the client sends a
 write, gets an immediate `202 Accepted`, and the durable write happens off the
 request path instead of synchronously against OpenSearch. Standalone osproxy has
-this (ADR-010); evoxy offers it on the ext_proc backend.
+this (ADR-010); evoxy offers it on both backends.
 
 It is opt-in per request. Send the header:
 
@@ -89,8 +89,8 @@ It is opt-in per request. Send the header:
 x-evoxy-write-mode: async
 ```
 
-on a write, and the ext_proc service runs the usual transform, then produces the
-physical (transformed) request to a fan-out sink and answers `202`:
+on a write, and the backend runs the usual transform, then produces the physical
+(transformed) request to a fan-out sink and answers `202`:
 
 ```json
 {"status":"accepted","op_id":"3f2a9c1b7e40d5a8"}
@@ -99,13 +99,26 @@ physical (transformed) request to a fan-out sink and answers `202`:
 The `op_id` is a shape-only correlation handle you can log. There is no proxy-side
 status endpoint for it; the durable record is now the consumer's to apply.
 
-Enable it by giving the ext_proc service a sink, any
+You enable it by giving the backend a sink, any
 [evoxy-bridge](https://github.com/huyz0/envoy-osproxy/tree/main/crates/evoxy-bridge)
-over an acknowledging producer:
+over an acknowledging producer. The sink is code (a broker client is not config), so
+this is one line in the artifact you already build.
+
+On **ext_proc**, add it to the service:
 
 ```rust
 let sink = Arc::new(Bridge::new(kafka_producer, "evoxy.writes"));
 let service = ExtProcService::new(filter).with_async_write_sink(sink);
+```
+
+On the **dynamic module**, register with a sink factory instead of the plain
+`register!` (see [`examples/async-module`](https://github.com/huyz0/envoy-osproxy/tree/main/examples/async-module)):
+
+```rust
+evoxy_module_sdk::register_async!(
+    reference_filter,
+    |_config: &str| Some(Arc::new(Bridge::new(kafka_producer, "evoxy.writes"))),
+);
 ```
 
 ### The one rule: never lie about a 202
@@ -121,8 +134,12 @@ acknowledges the produce. That has consequences worth stating plainly:
   async_write_unavailable`; it never silently downgrades to a sync write.
 - Async mode is for writes. The header on a read returns `400`.
 
-### Not on the dynamic module
+### The module blocks its Envoy worker
 
-Async write mode is ext_proc only. Awaiting a broker ack needs a real async runtime,
-which the in-process dynamic module has no clean way to do. On the module, use
-mirror-based capture/fan-out above.
+Both backends await the broker ack, but where they wait differs, and it matters. The
+ext_proc service blocks its own sidecar task. The dynamic module runs in-process, so
+it blocks the Envoy worker thread the filter is on for the whole ack round-trip. That
+can head-of-line block other connections on that worker, and it works against the
+module's reason to exist (lowest latency). So async mode is off on the module until
+you wire a sink, and you should only do so when that trade is acceptable. If you want
+async writes without touching Envoy's worker latency, prefer ext_proc.

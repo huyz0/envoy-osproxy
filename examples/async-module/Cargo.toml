@@ -1,0 +1,26 @@
+[package]
+name = "async-module"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+description = "Example: the reference tenancy as a dynamic module with async write mode (ADR-010) enabled — one evoxy_module_sdk::register_async! call wiring a fan-out sink."
+
+# The `.so` Envoy loads. Build with `cargo build --release` on a host with clang +
+# libclang (the SDK binds Envoy's C ABI via bindgen).
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# In your own project this is a GIT dependency (see custom-module). In-repo we use a
+# path so the example tracks local changes.
+evoxy-module-sdk = { path = "../../crates/evoxy-module-sdk" }
+# The fan-out bridge is the async-write sink; it implements evoxy_filter::AsyncWriteSink
+# over osproxy's Producer seam.
+evoxy-bridge = { path = "../../crates/evoxy-bridge" }
+osproxy-kafka = "=1.0.2"
+
+# A dynamic-module panic must not unwind across the C ABI into an Envoy worker.
+[profile.release]
+panic = "abort"

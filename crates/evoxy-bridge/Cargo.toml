@@ -10,6 +10,9 @@ description = "The async fan-out bridge (ADR-005): turns an Envoy-mirrored reque
 
 [dependencies]
 osproxy-kafka.workspace = true
+# For the `AsyncWriteSink` trait a `Bridge` implements, so a backend can drive an
+# async write straight through a bridge. filter does not depend on bridge (no cycle).
+evoxy-filter.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
