@@ -1,64 +1,97 @@
 # Introduction
 
-Multi-tenant OpenSearch proxy capabilities delivered as an Envoy extension. Point an
-`envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and get
-per-tenant isolation, request and response reshaping, `_bulk`/`_mget`/`_msearch`
-demux, epoch-gated migration, shape-only observability, traffic capture, and async
-write mode.
+envoy-osproxy turns a plain Envoy into a multi-tenant OpenSearch proxy. You point an
+`envoyproxy/envoy` release at your OpenSearch cluster, load one artifact, and every
+request gets per-tenant isolation, request and response reshaping,
+`_bulk`/`_mget`/`_msearch` fan-out, epoch-gated migration, shape-only observability,
+traffic capture, and async writes. Envoy keeps doing what it is good at (TLS, HTTP
+codecs, pooling, load balancing, retries); the tenancy logic rides on top as an
+extension, not a fork.
 
-## An extension of osproxy that runs inside Envoy
+## Built on osproxy
 
-envoy-osproxy is an extension of [osproxy](https://github.com/huyz0/opensearch-proxy),
-the standalone multi-tenant OpenSearch proxy. It runs osproxy's logic inside Envoy
-instead of osproxy's own HTTP server.
+The tenancy logic is not new here. It comes from
+[osproxy](https://github.com/huyz0/opensearch-proxy), a standalone multi-tenant
+OpenSearch proxy, whose one deliberate design choice makes this project possible:
+osproxy separates its brain from its wire. The brain is a transport-agnostic engine
+that turns a request into a routing and transform decision. The wire is whatever
+speaks HTTP to move bytes. osproxy ships its own HTTP server as the wire;
+envoy-osproxy keeps the brain byte-for-byte and swaps Envoy in as the wire. The
+engine crates come straight from crates.io, so there is no second repository to check
+out.
 
-osproxy already separates its brain from its wire. The brain is a
-transport-agnostic engine that turns a request into a routing and transform
-decision. The wire is the server that speaks HTTP. This project keeps the brain
-unchanged and replaces the wire with Envoy:
+What that brain does is decide, per tenant, *where a request goes and how it is
+reshaped*. osproxy offers three isolation models, and the one you pick is the main
+knob:
 
-- osproxy provides the multi-tenant logic: tenancy and placement, isolation,
-  request and response reshaping, `_bulk`/`_mget`/`_msearch`, epoch-gated migration.
-- Envoy provides the wire: HTTP/1.1, HTTP/2 and gRPC, TLS and mTLS, connection
-  pooling, load balancing, retries, and circuit breaking.
-- envoy-osproxy is the layer between them. It hands each Envoy request to the
-  osproxy engine and applies the decision back onto Envoy.
+- **Dedicated cluster**: each tenant gets its own OpenSearch cluster. The proxy just
+  routes; nothing in the request body changes. Strongest isolation, most
+  infrastructure.
+- **Dedicated index**: tenants share a cluster but each gets its own physical index.
+  The proxy rewrites the index in the request path (`/orders` becomes
+  `/orders-acme`). A middle ground.
+- **Shared index**: all tenants live in one physical index, kept apart by a
+  partition field the proxy injects into each document and a partition-scoped
+  document id it constructs, with reads filtered back to the caller's own data.
+  Densest, cheapest, and the transform does the most work.
 
-The engine crates come from crates.io, so a `cargo build` resolves everything and
-there is no other repository to check out.
+On top of placement sit a few per-request behaviors that are also "modes": some
+indices can be marked passthrough and skip tenancy entirely; a write can be mirrored
+for capture or fanned out to Kafka; and a write can run in async mode, where the
+client gets an immediate `202` and the durable write happens off the request path.
+Migration between placements is epoch-gated, so a tenant can move clusters or indices
+without a stop-the-world cutover.
 
-## This is a toolkit, not a ready-to-run proxy
+## Two ways to run it inside Envoy
 
-There is no binary to `docker run`. To put envoy-osproxy in front of OpenSearch you
-do three things:
+The same brain runs behind either of Envoy's two extension points. This is a
+deployment choice, not a rewrite, and the trade is straightforward.
 
-1. Decide the tenancy. Many setups need no code: the built-in reference tenancy is
-   driven entirely by config (see [Configuration-only mode](08-config-only.md)). For
-   anything beyond it, [implement a tenancy](02-tenancy.md).
-2. Build an artifact: an out-of-process ext_proc gRPC server, or an in-process
-   dynamic-module `.so`.
-3. Configure Envoy: load the artifact and map your logical clusters to real
-   OpenSearch upstreams.
-
-If the reference tenancy fits, start with
-[Configuration-only mode](08-config-only.md). Otherwise start with
-[Implementing a tenancy](02-tenancy.md), then build a backend
-([ext_proc](03-build-extproc.md) or [dynamic module](04-build-module.md)).
-
-## Two backends, one brain
-
-The same logic runs behind either Envoy extension point. This is a deployment
-choice, not a rewrite. Pick the dynamic module when latency is the priority and you
-can accept a shared crash domain; pick ext_proc when process isolation and an
-independent deploy matter more than a couple of milliseconds.
-
-| backend | mechanism | measured added latency | trade-off |
+| backend | mechanism | added latency | trade-off |
 |---|---|---|---|
-| ext_proc | out-of-process gRPC sidecar | +2.3 ms over Envoy | process isolation, independent deploy |
-| dynamic module | in-process Rust `.so` | about 0 ms over Envoy (within the noise) | lowest latency, shared crash domain |
+| dynamic module | in-process Rust `.so` | about 0 ms over Envoy | lowest latency, shared crash domain |
+| ext_proc | out-of-process gRPC sidecar | a couple of ms | process isolation, independent deploy |
 
-Both are verified end to end. The
-[backend comparison](05-backends.md) has the measured numbers.
+Pick the **dynamic module** when latency is the priority and you can accept that a
+bug in the module shares Envoy's process. Pick **ext_proc** when you want the tenancy
+logic in its own process, deployable on its own schedule, and a couple of
+milliseconds is a fair price. Everything below, isolation, capture, async, and the
+observability surfaces, works the same on both. The
+[backend comparison](05-backends.md) walks through the choice.
+
+## Most setups need no code
+
+If the three isolation models cover you, you write no Rust at all. The built-in
+reference tenancy is driven entirely by an Envoy `filter_config` blob: pick the
+isolation model, say where the tenant comes from (a header, the mTLS principal, or a
+path segment), and map tenants to clusters or index names. Capture, async writes, and
+the admin/observability surfaces are configured the same way. The
+[configuration-only guide](08-config-only.md) is the whole no-code path, and
+[capture and async fan-out](09-capture-and-fanout.md) covers the traffic-shaping
+modes.
+
+## When config is not enough: a tenancy SPI
+
+Some tenancies need real logic: a physical index that mixes the tenant with the
+client's index name, placement looked up from a store, a tenant derived from a JWT
+claim, or a live migration state machine. For those you implement `TenancySpi`, the
+same Rust trait osproxy uses. It is a small trait, and the reference tenancy is a
+working example to copy from. Start at
+[implementing a tenancy](02-tenancy.md), then build one of the two artifacts:
+[the ext_proc server](03-build-extproc.md) or
+[the dynamic module](04-build-module.md). Both are generic over your tenancy, so the
+code you write plugs into either backend unchanged.
+
+## What it costs
+
+The overhead is small and measured, not guessed. The dynamic module adds no latency
+you can distinguish from Envoy's own noise; ext_proc adds a couple of milliseconds
+for its out-of-process hop. The per-request transform work, even the shared-index
+path that rewrites the body, is microseconds, swamped by OpenSearch's own write
+latency. Throughput scales with concurrency instead of inflating latency: in the
+harness, going from 1 to 32 concurrent clients raised throughput about 20x (55 to
+1,100 rps) while the median stayed roughly flat (18 to 25 ms). Every number comes from a repo harness you can re-run; the
+[benchmarks page](06-benchmarks.md) has the setup and the tables.
 
 ## Where to go next
 
@@ -67,9 +100,8 @@ Both are verified end to end. The
   transform-cost numbers.
 - [Configuration-only mode](08-config-only.md) is the no-code path: drive the
   reference tenancy from `filter_config`.
-- [Capture and async fan-out](09-capture-and-fanout.md) mirrors traffic to a bridge
-  and on to Kafka with no code, and covers async write mode (`202` + durable fan-out)
-  on both backends.
+- [Capture and async fan-out](09-capture-and-fanout.md) covers the traffic-capture
+  and async-write modes.
 - [Implementing a tenancy](02-tenancy.md) is the code you write when config is not
   enough.
 - [Building the ext_proc backend](03-build-extproc.md) and
