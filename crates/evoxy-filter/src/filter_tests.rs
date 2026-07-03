@@ -75,6 +75,40 @@ fn request(method: &str, path: &str, tenant: Option<&str>, body: &[u8]) -> Filte
 }
 
 #[tokio::test]
+async fn passthrough_index_is_forwarded_unchanged() {
+    // `catalog` is a passthrough index: the filter routes it upstream with no
+    // partition, no transform, no cluster override. No tenant header needed.
+    let f = filter().with_passthrough_indices(["catalog".to_owned()]);
+    let req = request("POST", "/catalog/_search", None, br#"{"q":1}"#);
+    let mut actions = FakeActions::default();
+
+    let decision = f.handle(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::ContinueUpstream);
+    assert!(actions.cluster.is_none(), "no cluster override");
+    assert!(actions.path.is_none(), "path untouched");
+    assert!(actions.body.is_none(), "body untouched");
+    assert!(actions.local_reply.is_none());
+}
+
+#[tokio::test]
+async fn path_partition_moves_the_tenant_from_the_path() {
+    // Tenant in the path: `/acme/orders/_doc/42` routes as tenant `acme`, path
+    // `/orders/_doc/42`. The reference tenancy (header source) resolves the injected
+    // header and forwards to the placement cluster.
+    let f = filter().with_path_partition_header("x-tenant");
+    let req = request("PUT", "/acme/orders/_doc/42", None, br#"{"k":1}"#);
+    let mut actions = FakeActions::default();
+
+    let decision = f.handle(&req, &mut actions).await;
+
+    assert_eq!(decision, FilterDecision::ContinueUpstream);
+    assert_eq!(actions.cluster.as_deref(), Some("opensearch"));
+    // The tenant segment is gone; the physical path has the logical index and id.
+    assert_eq!(actions.path.as_deref(), Some("/orders/_doc/42"));
+}
+
+#[tokio::test]
 async fn write_is_mutated_and_continued_upstream() {
     let req = request("PUT", "/orders/_doc/42", Some("acme"), br#"{"k":1}"#);
     let mut actions = FakeActions::default();

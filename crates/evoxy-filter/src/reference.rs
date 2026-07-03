@@ -67,6 +67,12 @@ pub struct FilterConfig {
     /// Resolve the partition from the Envoy-validated mTLS principal instead of the
     /// header (`partition_source: principal`). Unspoofable, since Envoy validated it.
     pub partition_from_principal: bool,
+    /// Take the tenant from the first path segment (`partition_source: path`): the
+    /// filter strips it and moves it into `partition_header` before routing.
+    pub partition_from_path: bool,
+    /// Logical indices that bypass tenancy entirely (forwarded unchanged), for
+    /// global or shared indices that need no isolation. Empty by default.
+    pub passthrough_indices: Vec<String>,
     /// Used when the partition source is missing, instead of failing closed. Enables
     /// single-tenant deployments and graceful defaults. `None` fails closed.
     pub default_partition: Option<String>,
@@ -93,6 +99,8 @@ impl Default for FilterConfig {
             endpoint_by_partition: BTreeMap::new(),
             partition_header: "x-tenant".to_owned(),
             partition_from_principal: false,
+            partition_from_path: false,
+            passthrough_indices: Vec::new(),
             default_partition: None,
             index_template: DEFAULT_INDEX_TEMPLATE.to_owned(),
             shared_index: None,
@@ -107,64 +115,83 @@ impl FilterConfig {
     /// Parse a JSON config blob, falling back to defaults for any missing key.
     #[must_use]
     pub fn from_json(raw: &str) -> Self {
-        let parsed: serde_json::Value =
-            serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
-        let default = Self::default();
-        let string = |key: &str, fallback: String| {
-            parsed
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .map_or(fallback, ToOwned::to_owned)
-        };
-        let opt_string = |key: &str| {
-            parsed
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        };
-        let bool_of = |key: &str, fallback: bool| {
-            parsed
-                .get(key)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(fallback)
-        };
-        // A JSON object of partition to string (for the per-partition maps).
-        let string_map = |key: &str| {
-            parsed
-                .get(key)
-                .and_then(serde_json::Value::as_object)
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let shared_index = opt_string("shared_index");
-        // `partition_source: principal` and the legacy `partition_from_principal`.
-        let from_principal = parsed
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+        let d = Self::default();
+        let shared_index = opt_str(&v, "shared_index");
+        // `partition_source`: header (default), principal, or path. The legacy
+        // `partition_from_principal` bool still selects the principal source.
+        let source = v
             .get("partition_source")
             .and_then(serde_json::Value::as_str)
-            .map_or_else(
-                || bool_of("partition_from_principal", default.partition_from_principal),
-                |s| s.eq_ignore_ascii_case("principal"),
-            );
+            .map(str::to_ascii_lowercase);
+        let from_principal = match source.as_deref() {
+            Some("principal") => true,
+            Some(_) => false,
+            None => bool_at(&v, "partition_from_principal", d.partition_from_principal),
+        };
         Self {
-            isolation: parse_isolation(parsed.get("isolation"), shared_index.is_some()),
-            cluster: string("cluster", default.cluster),
-            cluster_by_partition: string_map("cluster_by_partition"),
-            endpoint: string("endpoint", default.endpoint),
-            endpoint_by_partition: string_map("endpoint_by_partition"),
-            partition_header: string("partition_header", default.partition_header),
+            isolation: parse_isolation(v.get("isolation"), shared_index.is_some()),
+            cluster: str_at(&v, "cluster", d.cluster),
+            cluster_by_partition: str_map(&v, "cluster_by_partition"),
+            endpoint: str_at(&v, "endpoint", d.endpoint),
+            endpoint_by_partition: str_map(&v, "endpoint_by_partition"),
+            partition_header: str_at(&v, "partition_header", d.partition_header),
             partition_from_principal: from_principal,
-            default_partition: opt_string("default_partition"),
-            index_template: string("index_template", default.index_template),
+            partition_from_path: source.as_deref() == Some("path"),
+            passthrough_indices: str_array(&v, "passthrough_indices"),
+            default_partition: opt_str(&v, "default_partition"),
+            index_template: str_at(&v, "index_template", d.index_template),
             shared_index,
-            inject_field: string("inject_field", default.inject_field),
-            id_template: string("id_template", default.id_template),
-            routing: bool_of("routing", default.routing),
+            inject_field: str_at(&v, "inject_field", d.inject_field),
+            id_template: str_at(&v, "id_template", d.id_template),
+            routing: bool_at(&v, "routing", d.routing),
         }
     }
+}
+
+/// A string key, or `fallback` when absent.
+fn str_at(v: &serde_json::Value, key: &str, fallback: String) -> String {
+    v.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map_or(fallback, ToOwned::to_owned)
+}
+
+/// An optional string key.
+fn opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+/// A bool key, or `fallback` when absent.
+fn bool_at(v: &serde_json::Value, key: &str, fallback: bool) -> bool {
+    v.get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(fallback)
+}
+
+/// A JSON object of string to string (the per-partition maps).
+fn str_map(v: &serde_json::Value, key: &str) -> BTreeMap<String, String> {
+    v.get(key)
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A JSON array of strings (logical index names, for passthrough).
+fn str_array(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|val| val.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Map the `isolation` config value to an [`Isolation`], inferring it from

@@ -3,10 +3,11 @@
 //! `.so` into a STOCK `envoyproxy/envoy:v1.37.0` (no fork, no rebuild) and drives
 //! real requests through it into a real OpenSearch.
 //!
-//! Six tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
+//! Seven tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
 //! first with `cargo xtask module-image`, then run with `--ignored`). Beyond the
 //! write/read and shared-index isolation cases, they cover the config-only
 //! multi-tenancy patterns: `dedicated_index_...` (per-tenant physical index),
+//! `config_only_passthrough_and_path_source` (passthrough indices + path tenant),
 //! `per_tenant_cluster_...` (header-matched clusters),
 //! `dynamic_forward_proxy_dials_the_tenancy_endpoint` (endpoint dialed with no
 //! cluster defined), and `dynamic_forward_proxy_dials_an_https_upstream` (TLS/ALB).
@@ -393,6 +394,59 @@ async fn dedicated_index_gives_each_tenant_its_own_physical_index() {
         "logical index restored: {got}"
     );
     assert_eq!(got["_source"]["who"], json!("a"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker + the evoxy-envoy image; run with --ignored"]
+async fn config_only_passthrough_and_path_source() {
+    // Two config-only knobs, one OpenSearch, two Envoy instances.
+    let opensearch = start_opensearch().await;
+    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+    let http = reqwest::Client::new();
+
+    // Passthrough: `catalog` bypasses tenancy and is forwarded unchanged, with no
+    // tenant header at all.
+    {
+        let (_envoy, base) = start_envoy(os_port, r#"{"passthrough_indices":["catalog"]}"#).await;
+        let put = http
+            .put(format!("{base}/catalog/_doc/9"))
+            .header("content-type", "application/json")
+            .body(r#"{"shared":true}"#)
+            .send()
+            .await
+            .expect("passthrough PUT");
+        assert!(
+            put.status().is_success(),
+            "passthrough write {}",
+            put.status()
+        );
+        assert!(
+            source_at(&http, os_port, "catalog", "9").await.is_some(),
+            "passthrough doc landed in catalog unchanged"
+        );
+    }
+
+    // Path source: the tenant is the first path segment. `/acme/orders/_doc/2` routes
+    // as tenant `acme`, logical index `orders`, physical `orders-acme`.
+    {
+        let config = r#"{"partition_source":"path","isolation":"dedicated_index","index_template":"orders-{partition}"}"#;
+        let (_envoy, base) = start_envoy(os_port, config).await;
+        let put = http
+            .put(format!("{base}/acme/orders/_doc/2"))
+            .header("content-type", "application/json")
+            .body(r#"{"who":"a"}"#)
+            .send()
+            .await
+            .expect("path-source PUT");
+        assert!(put.status().is_success(), "path write {}", put.status());
+        assert_eq!(
+            source_at(&http, os_port, "orders-acme", "2")
+                .await
+                .expect("doc")["who"],
+            json!("a"),
+            "tenant taken from the path, routed to its per-tenant index"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

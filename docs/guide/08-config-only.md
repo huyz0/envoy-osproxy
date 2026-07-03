@@ -91,9 +91,28 @@ Set with `partition_source` (or the shortcut keys):
 - `header` (default): read the tenant from `partition_header`.
 - `principal`: read it from the Envoy-validated mTLS identity, which a client cannot
   spoof with a request header. Set `"partition_source": "principal"`.
+- `path`: the tenant is the first path segment. The filter strips it and moves it
+  into `partition_header` before routing, so `/acme/orders/_doc/1` resolves tenant
+  `acme` with path `/orders/_doc/1`. Set `"partition_source": "path"`.
 - `default_partition`: a fallback used when the source is missing, instead of failing
   closed. This is how you run single-tenant (default everything to one partition) or
   degrade gracefully. Without it, an unresolved tenant is a fail-closed `400`.
+
+## Passthrough indices
+
+List logical indices in `passthrough_indices` to exempt them from tenancy. A request
+for one is forwarded unchanged, with no partition required, no transform, and no
+cluster override, to Envoy's default route. This is for a global or shared index that
+every tenant reads without isolation, like a product catalog.
+
+```json
+{ "partition_header": "x-tenant", "passthrough_indices": ["catalog", "reference"] }
+```
+
+A write or read of `/catalog/...` passes straight through; `/orders/...` still routes
+by tenant. Note that passthrough is checked after the `path` source rewrite, so if
+you use both, the passthrough name is the index that remains once the tenant segment
+is stripped.
 
 ## Upstream selection
 
@@ -110,9 +129,10 @@ These apply across all isolation models:
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `isolation` | string | inferred | `dedicated_cluster`, `dedicated_index`, or `shared_index` |
-| `partition_source` | string | `header` | `header` or `principal` |
-| `partition_header` | string | `x-tenant` | header carrying the tenant (header source) |
+| `partition_source` | string | `header` | `header`, `principal`, or `path` |
+| `partition_header` | string | `x-tenant` | header carrying the tenant (header source, or where `path` puts it) |
 | `default_partition` | string | none | fallback tenant when the source is missing |
+| `passthrough_indices` | array | `[]` | logical indices forwarded unchanged, bypassing tenancy |
 | `cluster` | string | `opensearch` | default upstream cluster |
 | `cluster_by_partition` | object | `{}` | per-tenant cluster names |
 | `endpoint` | string | `http://localhost:9200` | default upstream URL (dynamic-forward-proxy) |

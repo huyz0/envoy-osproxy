@@ -45,13 +45,13 @@ pub fn install(
     abi::kAbiVersion.as_ptr().cast::<std::os::raw::c_char>()
 }
 
-/// Build a per-filter-chain config from Envoy's `filter_config` blob and a router
+/// Build a per-filter-chain config from Envoy's `filter_config` blob and a filter
 /// factory. The [`register!`](crate::register) macro calls this with your factory;
-/// it spins up the one-thread runtime the module drives its async work on and wraps
-/// your [`Router`] in the [`Module`] brain.
+/// it spins up the one-thread runtime the module drives its async work on and holds
+/// your [`Filter`](evoxy_filter::Filter) in the [`Module`] brain.
 pub fn new_config<R, EHF>(
     filter_config: &[u8],
-    factory: fn(&str) -> R,
+    factory: fn(&str) -> evoxy_filter::Filter<R>,
 ) -> Option<Box<dyn HttpFilterConfig<EHF>>>
 where
     R: Router + Send + Sync + 'static,

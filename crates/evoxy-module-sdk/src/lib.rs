@@ -13,12 +13,12 @@
 //! # Building your own module
 //!
 //! Your whole cdylib is one [`register!`] call with a factory that turns Envoy's
-//! `filter_config` blob into a [`Router`](osproxy_tenancy::Router):
+//! `filter_config` blob into a [`Filter`]:
 //!
 //! ```ignore
 //! evoxy_module_sdk::register!(|config: &str| {
 //!     let tenancy = my_tenancy::MyTenancy::from_json(config);
-//!     osproxy_tenancy::TenancyRouter::new(tenancy)
+//!     evoxy_filter::Filter::new(osproxy_tenancy::TenancyRouter::new(tenancy))
 //! });
 //! ```
 //!
@@ -27,11 +27,16 @@
 //! `examples/custom-module`.
 
 use evoxy_abi::FilterRequest;
-use evoxy_filter::{EnvoyActions, Filter, FilterDecision, ReferenceTenancy};
+use evoxy_filter::{EnvoyActions, FilterDecision, ReferenceTenancy};
 use osproxy_tenancy::{Router, TenancyRouter};
 use tokio::runtime::Handle;
 
 pub mod sdk;
+
+// Re-exported so a cdylib can build its `Filter` without a separate `evoxy-filter`
+// dependency: `evoxy_module_sdk::Filter::new(router)`. `FilterConfig` lets a custom
+// module reuse the reference config parser.
+pub use evoxy_filter::{Filter, FilterConfig};
 
 /// A loaded module: the request-handling brain plus the runtime handle used to
 /// drive its async work from Envoy's synchronous filter callbacks.
@@ -41,12 +46,9 @@ pub struct Module<R> {
 }
 
 impl<R: Router> Module<R> {
-    /// Build a module over a resolved router and a runtime handle.
-    pub fn new(router: R, runtime: Handle) -> Self {
-        Self {
-            filter: Filter::new(router),
-            runtime,
-        }
+    /// Build a module over a configured [`Filter`] and a runtime handle.
+    pub fn new(filter: Filter<R>, runtime: Handle) -> Self {
+        Self { filter, runtime }
     }
 
     /// Handle one buffered request, driving the async pipeline to completion on
@@ -84,20 +86,18 @@ impl<R: Router> Module<R> {
     }
 }
 
-/// The reference tenancy as a [`Router`], built from an Envoy `filter_config` blob.
-/// This is the factory the default `evoxy-module` artifact registers; a user
-/// artifact passes its own factory to [`register!`] instead (ADR-003).
+/// The reference-tenancy [`Filter`], built from an Envoy `filter_config` blob. This
+/// is the factory the default `evoxy-module` artifact registers; a user artifact
+/// passes its own factory to [`register!`] instead (ADR-003).
 #[must_use]
-pub fn reference_router(filter_config: &str) -> TenancyRouter<ReferenceTenancy> {
-    let config = evoxy_filter::FilterConfig::from_json(filter_config);
-    TenancyRouter::new(ReferenceTenancy::from_config(&config))
+pub fn reference_filter(filter_config: &str) -> Filter<TenancyRouter<ReferenceTenancy>> {
+    evoxy_filter::reference_filter(&evoxy_filter::FilterConfig::from_json(filter_config))
 }
 
 /// Register a dynamic module over your tenancy. Give it a factory
-/// `fn(&str) -> impl Router` (a non-capturing closure or a `fn` path works) that
-/// turns Envoy's `filter_config` blob into a [`Router`](osproxy_tenancy::Router);
-/// the macro generates Envoy's `on_program_init` entry point and wires your factory
-/// in.
+/// `fn(&str) -> Filter<_>` (a non-capturing closure or a `fn` path works) that turns
+/// Envoy's `filter_config` blob into a [`Filter`]; the macro generates Envoy's
+/// `on_program_init` entry point and wires your factory in.
 ///
 /// Invoke it **once** at the crate root of your `cdylib`. The upstream Envoy SDK is
 /// pulled in transitively — your crate never names it. See `examples/custom-module`.

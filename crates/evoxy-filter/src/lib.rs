@@ -16,10 +16,12 @@ mod reference;
 pub use osproxy_spi::MigrationPhase;
 pub use reference::{FilterConfig, Isolation, ReferenceTenancy};
 
+use std::collections::BTreeSet;
+
 use evoxy_abi::FilterRequest;
 use evoxy_route::{prepare, Forward};
 use osproxy_spi::HeaderOp;
-use osproxy_tenancy::Router;
+use osproxy_tenancy::{Router, TenancyRouter};
 
 /// The request header the filter sets to name the upstream cluster its placement
 /// chose. Envoy's route config matches on it to pick the real cluster (the ADR-002
@@ -75,6 +77,14 @@ pub enum FilterDecision {
 pub struct Filter<R> {
     router: R,
     require_mtls_for_mutation: bool,
+    /// Logical indices that bypass tenancy: a request for one is forwarded
+    /// unchanged (no partition, no transform), to Envoy's default route. For
+    /// global/shared indices that need no isolation. Empty by default.
+    passthrough_indices: BTreeSet<String>,
+    /// When set, the tenant is the first path segment: the filter strips it and
+    /// puts it in this header before classifying, so a header-keyed tenancy resolves
+    /// it. `None` disables path partitioning (the default).
+    path_partition_header: Option<String>,
 }
 
 impl<R: Router> Filter<R> {
@@ -84,6 +94,8 @@ impl<R: Router> Filter<R> {
         Self {
             router,
             require_mtls_for_mutation: false,
+            passthrough_indices: BTreeSet::new(),
+            path_partition_header: None,
         }
     }
 
@@ -97,6 +109,35 @@ impl<R: Router> Filter<R> {
         self
     }
 
+    /// Forward requests for these logical indices unchanged, bypassing tenancy: no
+    /// partition, no transform, no cluster override. For global or shared indices
+    /// that need no isolation.
+    #[must_use]
+    pub fn with_passthrough_indices(mut self, indices: impl IntoIterator<Item = String>) -> Self {
+        self.passthrough_indices = indices.into_iter().collect();
+        self
+    }
+
+    /// Take the tenant from the first path segment, moving it into `header` before
+    /// classification (so `/acme/orders/_doc/1` routes as tenant `acme`, path
+    /// `/orders/_doc/1`). Pair with a header-keyed tenancy reading the same header.
+    #[must_use]
+    pub fn with_path_partition_header(mut self, header: impl Into<String>) -> Self {
+        self.path_partition_header = Some(header.into());
+        self
+    }
+
+    /// If path partitioning is on, strip the first path segment into the configured
+    /// header and return the rewritten request; else `None` (use the original).
+    fn rewrite_for_path(&self, req: &FilterRequest) -> Option<FilterRequest> {
+        let header = self.path_partition_header.as_ref()?;
+        let (tenant, rest) = split_leading_segment(&req.path_and_query)?;
+        let mut rewritten = req.clone();
+        rewritten.path_and_query = rest;
+        rewritten.headers.push((header.clone(), tenant));
+        Some(rewritten)
+    }
+
     /// Handle one request: adapt → resolve+transform → issue effects. Returns
     /// whether Envoy should continue upstream or stop (a local reply was sent).
     ///
@@ -107,6 +148,11 @@ impl<R: Router> Filter<R> {
         req: &FilterRequest,
         actions: &mut dyn EnvoyActions,
     ) -> FilterDecision {
+        // Path partitioning (optional): the tenant is the first path segment, moved
+        // into a header before classification.
+        let rewritten = self.rewrite_for_path(req);
+        let req = rewritten.as_ref().unwrap_or(req);
+
         // Carry Envoy's request id through for traceability (docs/09).
         let request_id = req.header("x-request-id").unwrap_or("");
         let parts = match evoxy_adapter::RequestParts::from_filter(req, request_id) {
@@ -129,23 +175,19 @@ impl<R: Router> Filter<R> {
             return FilterDecision::StoppedWithLocalReply;
         }
 
-        match prepare(&self.router, &parts.ctx()).await {
-            Forward::Upstream(forward) => {
-                actions.set_upstream_cluster(&forward.cluster);
-                if let Some(host) = &forward.upstream_host {
-                    actions.set_upstream_host(host);
-                }
-                actions.set_method(forward.method);
-                actions.set_path(&forward.path);
-                actions.set_body(&forward.body);
-                apply_header_ops(&forward.header_ops, actions);
-                FilterDecision::ContinueUpstream
+        // Passthrough: a global/shared index bypasses tenancy and is forwarded
+        // unchanged (only the path-partition rewrite, if any, is applied).
+        if self
+            .passthrough_indices
+            .contains(parts.ctx().logical_index())
+        {
+            if rewritten.is_some() {
+                actions.set_path(&req.path_and_query);
             }
-            Forward::Immediate(resp) => {
-                actions.send_local_reply(resp.status, &resp.headers, &resp.body);
-                FilterDecision::StoppedWithLocalReply
-            }
+            return FilterDecision::ContinueUpstream;
         }
+
+        apply_forward(prepare(&self.router, &parts.ctx()).await, actions)
     }
 
     /// The **header-phase routing** decision (M2c): resolve only the upstream
@@ -162,6 +204,8 @@ impl<R: Router> Filter<R> {
         req: &FilterRequest,
         actions: &mut dyn EnvoyActions,
     ) -> FilterDecision {
+        let rewritten = self.rewrite_for_path(req);
+        let req = rewritten.as_ref().unwrap_or(req);
         let request_id = req.header("x-request-id").unwrap_or("");
         let parts = match evoxy_adapter::RequestParts::from_filter(req, request_id) {
             Ok(parts) => parts,
@@ -171,6 +215,17 @@ impl<R: Router> Filter<R> {
                 return FilterDecision::StoppedWithLocalReply;
             }
         };
+
+        // A passthrough index needs no cluster resolution; forward unchanged.
+        if self
+            .passthrough_indices
+            .contains(parts.ctx().logical_index())
+        {
+            if rewritten.is_some() {
+                actions.set_path(&req.path_and_query);
+            }
+            return FilterDecision::ContinueUpstream;
+        }
 
         match evoxy_route::resolve_target(&self.router, &parts.ctx()).await {
             Ok((cluster, host)) => {
@@ -226,6 +281,62 @@ impl<R: Router> Filter<R> {
         match evoxy_adapter::RequestParts::from_filter(req, "") {
             Ok(parts) => evoxy_route::explain(&self.router, &parts.ctx()).await,
             Err(_) => r#"{"outcome":"reject","status":400,"code":"unsupported_method"}"#.to_owned(),
+        }
+    }
+}
+
+/// Build a configured reference-tenancy filter from a parsed [`FilterConfig`]: the
+/// reference tenancy plus the filter-level options it enables (passthrough indices,
+/// path partitioning). This is the default artifact's whole brain.
+#[must_use]
+pub fn reference_filter(config: &FilterConfig) -> Filter<TenancyRouter<ReferenceTenancy>> {
+    let mut filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(config)));
+    if !config.passthrough_indices.is_empty() {
+        filter = filter.with_passthrough_indices(config.passthrough_indices.iter().cloned());
+    }
+    if config.partition_from_path {
+        filter = filter.with_path_partition_header(config.partition_header.clone());
+    }
+    filter
+}
+
+/// Split `/tenant/rest...` into (`tenant`, `/rest...`), preserving any `?query`.
+/// `None` when there is no leading segment plus a remainder to route on.
+fn split_leading_segment(path_and_query: &str) -> Option<(String, String)> {
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (path_and_query, None),
+    };
+    let (tenant, rest) = path.trim_start_matches('/').split_once('/')?;
+    if tenant.is_empty() {
+        return None;
+    }
+    let mut rewritten = format!("/{rest}");
+    if let Some(query) = query {
+        rewritten.push('?');
+        rewritten.push_str(query);
+    }
+    Some((tenant.to_owned(), rewritten))
+}
+
+/// Issue the effects for a routed [`Forward`]: mutate the request upstream, or send
+/// the fail-closed immediate reply.
+fn apply_forward(forward: Forward, actions: &mut dyn EnvoyActions) -> FilterDecision {
+    match forward {
+        Forward::Upstream(f) => {
+            actions.set_upstream_cluster(&f.cluster);
+            if let Some(host) = &f.upstream_host {
+                actions.set_upstream_host(host);
+            }
+            actions.set_method(f.method);
+            actions.set_path(&f.path);
+            actions.set_body(&f.body);
+            apply_header_ops(&f.header_ops, actions);
+            FilterDecision::ContinueUpstream
+        }
+        Forward::Immediate(resp) => {
+            actions.send_local_reply(resp.status, &resp.headers, &resp.body);
+            FilterDecision::StoppedWithLocalReply
         }
     }
 }
