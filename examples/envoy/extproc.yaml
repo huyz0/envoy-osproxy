@@ -6,6 +6,11 @@
 # the service's construction: the ext_proc service ships the reference tenancy;
 # see examples/README.md and the "current limitations" there re: a custom SPI on
 # this backend).
+#
+# Note: unlike the dynamic module, there is NO `filter_config` blob here. Envoy's
+# ext_proc filter only names the gRPC endpoint (grpc_service below); the server is
+# your own process, so it reads its own config (tenancy, admin token, observe knobs)
+# at construction, typically from env vars. See docs/guide/03-build-extproc.md.
 static_resources:
   listeners:
     - name: ingress

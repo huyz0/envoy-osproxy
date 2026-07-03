@@ -26,7 +26,12 @@ static_resources:
                           route: { cluster: opensearch }
                 http_filters:
                   # The evoxy dynamic module. `name` selects the loaded .so
-                  # (libevoxy_module.so); `filter_config` is the reference-tenancy blob.
+                  # (libevoxy_module.so); `filter_config` is one JSON blob that
+                  # configures both the tenancy and the observe/admin surface. The
+                  # tenancy keys (cluster/partition_header/shared_index/inject_field)
+                  # and the observe keys (admin_token/emit_decision) share the blob;
+                  # each parser ignores the other's keys. Omit admin_token to leave
+                  # the /_evoxy/admin/directives plane fail-closed 403.
                   - name: envoy.filters.http.dynamic_modules
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
@@ -39,7 +44,9 @@ static_resources:
                             "cluster": "opensearch",
                             "partition_header": "x-tenant",
                             "shared_index": "orders_shared",
-                            "inject_field": "_tenant"
+                            "inject_field": "_tenant",
+                            "admin_token": "change-me",
+                            "emit_decision": true
                           }
                   - name: envoy.filters.http.router
                     typed_config:

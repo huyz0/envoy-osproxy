@@ -76,12 +76,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Swap `TieredTenancy` for `evoxy_filter::ReferenceTenancy` if you want the built-in
 tenancy with no custom code.
 
-`ExtProcService` has two options worth knowing:
+`ExtProcService` has a few options worth knowing:
 
 - `.with_max_request_body_bytes(n)` caps the buffered request body. A larger body is
   refused with `413` before the brain runs, which bounds the per-request working set.
 - `.with_admin_token(token)` enables the runtime directive plane behind a bearer
   token. Without it the plane fails closed with `403`.
+- `.with_observe_config(&cfg)` sets the whole observe surface (the admin token and
+  the initial decision-header state) at once.
+
+### Why there is no filter_config here
+
+The dynamic module is a library Envoy loads, so Envoy hands it a `filter_config`
+blob at load time, and the module parses its tenancy and observe knobs (`admin_token`,
+`emit_decision`) from that one blob. ext_proc is the opposite shape: Envoy's ext_proc
+filter only names your gRPC endpoint, it never passes an application config. Your
+server is a process you run, so it reads its own config however you like, which is
+more flexible than a static blob baked into Envoy's bootstrap.
+
+If you want parity with the module's blob, feed the same JSON to the server from an
+env var:
+
+```rust
+let observe = evoxy_filter::ObserveConfig::from_json(&std::env::var("EVOXY_OBSERVE")?);
+let service = ExtProcService::new(filter).with_observe_config(&observe);
+// EVOXY_OBSERVE='{"admin_token":"change-me","emit_decision":true}'
+```
+
+`ObserveConfig::from_json` reads the same `admin_token` / `emit_decision` keys the
+module reads, so one config shape works for both backends.
 
 Run it like any binary. Package it in a container and deploy it next to Envoy.
 
