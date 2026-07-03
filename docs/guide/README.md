@@ -64,17 +64,17 @@ Both are verified end to end through a stock, unmodified Envoy. The
 ## Where to go next
 
 - [Architecture](01-architecture.md) covers the components and how a request flows.
+- [Benchmarks](06-benchmarks.md) has the measured latency, concurrency, and
+  transform-cost numbers.
 - [Configuration-only mode](08-config-only.md) is the no-code path: drive the
   reference tenancy from `filter_config`.
+- [Capture and async fan-out](09-capture-and-fanout.md) mirrors traffic to a bridge
+  and on to Kafka with no code, and covers async write mode (`202` + durable fan-out)
+  on both backends.
 - [Implementing a tenancy](02-tenancy.md) is the code you write when config is not
   enough.
 - [Building the ext_proc backend](03-build-extproc.md) and
   [Building the dynamic module](04-build-module.md) are the two deployment paths.
 - [ext_proc vs. dynamic module](05-backends.md) helps you pick one.
-- [Benchmarks](06-benchmarks.md) has the measured latency, concurrency, and
-  transform-cost numbers.
 - [Admin and observability](07-observability.md) covers the shape-only metrics,
   decision header, explain dry-run, and the runtime directive plane.
-- [Capture and async fan-out](09-capture-and-fanout.md) mirrors traffic to a bridge
-  and on to Kafka with no code, and covers ext_proc async write mode (`202` + durable
-  fan-out).
