@@ -9,6 +9,7 @@
 //!   arch     Crate dependency-direction check (downward-only, INV-1).
 //!   budgets  Source-file size budgets; overflow needs a `// JUSTIFY`.
 //!   bench    Deterministic instruction-count microbenchmarks (needs valgrind).
+//!   coverage Line-coverage gate: >=90% lines via cargo-llvm-cov (xtask excluded).
 //!   crypto-free  The shipped extension links no wire crypto (FIPS boundary, M6).
 //!   module-image Build the dynamic module into a stock Envoy image (needs Docker).
 
@@ -26,6 +27,7 @@ fn main() -> ExitCode {
         "arch" => arch(),
         "budgets" => budgets(),
         "bench" => bench(),
+        "coverage" => coverage(),
         "crypto-free" => crypto_free(),
         "module-image" => module_image(),
         other => Err(format!("unknown command: {other}\n{USAGE}")),
@@ -39,8 +41,11 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str =
-    "usage: cargo xtask <ci|fmt|clippy|test|doc|arch|budgets|bench|crypto-free|module-image>";
+const USAGE: &str = "usage: cargo xtask \
+    <ci|fmt|clippy|test|doc|arch|budgets|bench|coverage|crypto-free|module-image>";
+
+/// The line-coverage floor the `coverage` gate enforces (percent).
+const COVERAGE_FLOOR_LINES: &str = "90";
 
 /// The stock-Envoy image tag we build the module into. Kept equal to the SDK tag
 /// pinned in `evoxy-module-sdk/Cargo.toml` (the ABI hash is load-checked).
@@ -95,6 +100,31 @@ fn bench() -> Result<(), String> {
         return Ok(());
     }
     run("cargo", &["bench", "--workspace"])
+}
+
+/// The line-coverage gate (>=90%, NFR-T): `cargo llvm-cov` over the workspace,
+/// failing the build when line coverage drops under [`COVERAGE_FLOOR_LINES`].
+/// `xtask` itself is excluded (build tooling, not shipped code), matching osproxy's
+/// convention. Needs `cargo-llvm-cov` installed; a separate command (not in `ci`)
+/// because it recompiles the workspace instrumented, which is minutes not seconds.
+fn coverage() -> Result<(), String> {
+    if which("cargo-llvm-cov").is_none() {
+        return Err(
+            "coverage: cargo-llvm-cov not found (install: cargo install cargo-llvm-cov)".into(),
+        );
+    }
+    run(
+        "cargo",
+        &[
+            "llvm-cov",
+            "--workspace",
+            "--summary-only",
+            "--ignore-filename-regex",
+            "xtask/src",
+            "--fail-under-lines",
+            COVERAGE_FLOOR_LINES,
+        ],
+    )
 }
 
 /// Build the dynamic module into a stock Envoy image (ADR-004). Self-contained:

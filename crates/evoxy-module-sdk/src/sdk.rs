@@ -192,9 +192,12 @@ where
             // ignored (why per-tenant routing needs this). A resolution error here
             // fails closed immediately.
             let req = build_request(&self.headers, Vec::new());
-            let mut actions = SdkActions::new(Vec::new());
+            let mut actions = SdkActions::default();
             let decision = self.shared.module.route_headers(&req, &mut actions);
-            actions.apply(envoy);
+            // `route_headers` only ever calls `set_upstream_cluster`/`set_upstream_host`
+            // (never `set_body`), and Envoy has not buffered a body yet at this phase,
+            // so there is no original body to compare against or replace.
+            actions.apply(envoy, &[]);
             if decision == FilterDecision::StoppedWithLocalReply {
                 // Already replied (fail-closed); do not wait for a body.
                 return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue;
@@ -284,13 +287,15 @@ where
     /// finalization point (reads at the header phase, writes after the body buffers),
     /// so it counts once; the header-phase `route_headers` for a write does not.
     fn process<EHF: EnvoyHttpFilter>(&self, envoy: &mut EHF, body: Vec<u8>) {
-        let req = build_request(&self.headers, body.clone());
-        let mut actions = SdkActions::new(body);
+        // The request owns the one copy of the body; `apply` compares the brain's
+        // output against `req.body` by reference, so no second copy is made.
+        let req = build_request(&self.headers, body);
+        let mut actions = SdkActions::default();
         match self.shared.module.on_request(&req, &mut actions) {
             FilterDecision::ContinueUpstream => self.shared.module.record_routed(),
             FilterDecision::StoppedWithLocalReply => self.shared.module.record_rejected(),
         }
-        actions.apply(envoy);
+        actions.apply(envoy, &req.body);
     }
 
     /// Send an async-write [`ImmediateReply`] to the client and tally the outcome (a
@@ -330,7 +335,6 @@ fn build_request(headers: &[(String, String)], body: Vec<u8>) -> FilterRequest {
 /// handle after the async pipeline completes.
 #[derive(Default)]
 struct SdkActions {
-    original_body: Vec<u8>,
     method: Option<String>,
     path: Option<String>,
     cluster: Option<String>,
@@ -342,16 +346,10 @@ struct SdkActions {
 }
 
 impl SdkActions {
-    fn new(original_body: Vec<u8>) -> Self {
-        Self {
-            original_body,
-            ..Default::default()
-        }
-    }
-
     /// Commit: a fail-closed reply wins (stop the chain); otherwise apply the
-    /// header/method/path rewrites and replace the body iff it changed.
-    fn apply<EHF: EnvoyHttpFilter>(self, envoy: &mut EHF) {
+    /// header/method/path rewrites and replace the body iff it changed from
+    /// `original_body` (the request body as received, borrowed — not copied).
+    fn apply<EHF: EnvoyHttpFilter>(self, envoy: &mut EHF, original_body: &[u8]) {
         if let Some((status, body)) = self.immediate {
             envoy.send_response(u32::from(status), Vec::new(), Some(&body), None);
             return;
@@ -385,7 +383,7 @@ impl SdkActions {
             envoy.clear_route_cache();
         }
         if let Some(body) = self.body {
-            if body != self.original_body {
+            if body != original_body {
                 // Replace the buffered body: drain the old bytes, append the new.
                 let existing = envoy.get_buffered_request_body_size();
                 if existing > 0 {

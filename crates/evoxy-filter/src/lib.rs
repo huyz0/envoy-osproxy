@@ -317,13 +317,16 @@ pub fn reference_filter(config: &FilterConfig) -> Filter<TenancyRouter<Reference
 }
 
 /// Split `/tenant/rest...` into (`tenant`, `/rest...`), preserving any `?query`.
-/// `None` when there is no leading segment plus a remainder to route on.
+/// `None` when there is no leading segment plus a remainder to route on. Exactly
+/// one leading slash is stripped: a doubled slash (`//x/...`) has an *empty* first
+/// segment, which is not a tenant — that fails closed rather than shifting the
+/// parse so a path segment masquerades as the tenant.
 fn split_leading_segment(path_and_query: &str) -> Option<(String, String)> {
     let (path, query) = match path_and_query.split_once('?') {
         Some((path, query)) => (path, Some(query)),
         None => (path_and_query, None),
     };
-    let (tenant, rest) = path.trim_start_matches('/').split_once('/')?;
+    let (tenant, rest) = path.strip_prefix('/').unwrap_or(path).split_once('/')?;
     if tenant.is_empty() {
         return None;
     }

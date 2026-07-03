@@ -16,6 +16,11 @@ use osproxy_tenancy::Router;
 
 use crate::Filter;
 
+/// The namespace every reserved introspection path lives under. `METRICS_PATH`,
+/// `ADMIN_PATH`, and `EXPLAIN_PREFIX` all start with this — checked by a unit test
+/// so a future reserved path can't be added outside it and silently fall through to
+/// the data plane (see the `starts_with` fast-exit in `reserved_reply`).
+const RESERVED_PREFIX: &str = "/_evoxy/";
 /// The reserved path served with a shape-only metrics snapshot.
 pub const METRICS_PATH: &str = "/_evoxy/metrics";
 /// The reserved path the token-gated directive plane is served on.
@@ -214,6 +219,11 @@ impl Observe {
         headers: &[(String, String)],
     ) -> Option<ImmediateReply> {
         let path = reserved_path(headers);
+        // Everything reserved lives under `RESERVED_PREFIX`; a data-plane request
+        // exits on this one prefix check without the per-path comparisons below.
+        if !path.starts_with(RESERVED_PREFIX) {
+            return None;
+        }
         if path == METRICS_PATH {
             return Some(ImmediateReply {
                 status: 200,
@@ -223,8 +233,8 @@ impl Observe {
         if path == ADMIN_PATH {
             return Some(self.admin_reply(headers));
         }
-        if let Some(target) = explain_target(headers) {
-            let req = request_from_headers(headers, Some(&target));
+        if let Some(target) = explain_target(path) {
+            let req = request_from_headers(headers, Some(target));
             return Some(ImmediateReply {
                 status: 200,
                 body: filter.explain(&req).await.into_bytes(),
@@ -310,12 +320,11 @@ fn reserved_path(headers: &[(String, String)]) -> &str {
 }
 
 /// The target path an explain request names, or `None`. `/_evoxy/explain/o/_search`
-/// → `/o/_search`.
-fn explain_target(headers: &[(String, String)]) -> Option<String> {
-    reserved_path(headers)
-        .strip_prefix(EXPLAIN_PREFIX)
+/// → `/o/_search`. Takes the already-computed reserved path so the headers are
+/// scanned once per request.
+fn explain_target(path: &str) -> Option<&str> {
+    path.strip_prefix(EXPLAIN_PREFIX)
         .filter(|rest| rest.starts_with('/'))
-        .map(str::to_owned)
 }
 
 /// The raw `?query` of the request `:path`, for the directive plane's settings.

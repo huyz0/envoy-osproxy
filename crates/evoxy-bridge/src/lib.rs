@@ -167,6 +167,20 @@ mod tests {
         }
     }
 
+    /// The `AsyncWriteSink` impl (the async-write seam) delegates to the same
+    /// acked produce, so a backend driving a `dyn AsyncWriteSink` gets the ack.
+    #[tokio::test]
+    async fn bridge_is_an_async_write_sink() {
+        let bridge = Bridge::new(RecordingAck::default(), "evoxy.writes");
+        let sink: &dyn evoxy_filter::AsyncWriteSink = &bridge;
+        sink.produce_acked("/o/_doc/1", b"{}")
+            .await
+            .expect("acked produce");
+        let acked = bridge.producer().acked.lock().unwrap();
+        assert_eq!(acked.len(), 1);
+        assert_eq!(acked[0].1, b"/o/_doc/1");
+    }
+
     #[tokio::test]
     async fn forward_acked_awaits_the_broker_ack() {
         let bridge = Bridge::new(RecordingAck::default(), "evoxy.fanout");

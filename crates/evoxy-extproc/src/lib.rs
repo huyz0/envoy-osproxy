@@ -87,7 +87,7 @@ async fn process_message<R: Router>(
             // The reserved introspection paths (M7) are answered by the filter
             // itself, short-circuited before any routing.
             if let Some(reply) = observe.reserved_reply(filter, &state.headers).await {
-                return immediate_from_reply(&reply);
+                return immediate_from_reply(reply);
             }
             if headers.end_of_stream {
                 // A bodyless write (e.g. delete-by-id): async mode queues it here.
@@ -139,21 +139,29 @@ async fn process_message<R: Router>(
             let shaped = filter.shape_response(&req, &body.body).await;
             response_body(shaped)
         }
-        // Trailers etc.: continue unmodified.
-        _ => wrap(Resp::RequestBody(BodyResponse {
+        // Trailers: continue unmodified, replying with the phase-matched oneof
+        // (Envoy's ext_proc contract expects the response variant to match the
+        // request phase, so a trailers phase must not get a body-phase reply).
+        Some(Req::RequestTrailers(_)) => wrap(Resp::RequestTrailers(extproc::TrailersResponse {
+            header_mutation: None,
+        })),
+        Some(Req::ResponseTrailers(_)) => wrap(Resp::ResponseTrailers(extproc::TrailersResponse {
+            header_mutation: None,
+        })),
+        None => wrap(Resp::RequestBody(BodyResponse {
             response: Some(extproc::CommonResponse::default()),
         })),
     }
 }
 
 /// Render a backend-neutral [`ImmediateReply`] (from the shared observe surface) as
-/// an ext_proc immediate response.
-fn immediate_from_reply(reply: &ImmediateReply) -> ProcessingResponse {
+/// an ext_proc immediate response. Takes ownership so the body moves, not clones.
+fn immediate_from_reply(reply: ImmediateReply) -> ProcessingResponse {
     wrap(Resp::ImmediateResponse(ImmediateResponse {
         status: Some(HttpStatus {
             code: i32::from(reply.status),
         }),
-        body: reply.body.clone(),
+        body: reply.body,
         ..Default::default()
     }))
 }
@@ -239,11 +247,11 @@ async fn finalize<R: Router>(
     phase: Phase,
 ) -> ProcessingResponse {
     let req = convert::filter_request(headers, body);
-    let orig_method = req.method.clone();
-    let orig_path = req.path().to_owned();
     let mut actions = ExtProcActions::default();
     let _decision = filter.handle(&req, &mut actions).await;
-    match actions.finish(&orig_method, &orig_path) {
+    // `req` is still owned here, so the original request line is read straight from
+    // it (no per-request method/path clones just to compare against).
+    match actions.finish(&req.method, req.path()) {
         Ok(common) => {
             observe.record_routed();
             wrap(match phase {
@@ -297,7 +305,7 @@ async fn finalize_async<R: Router>(
     } else {
         observe.record_rejected();
     }
-    immediate_from_reply(&reply)
+    immediate_from_reply(reply)
 }
 
 /// Wrap a response oneof into a `ProcessingResponse`.

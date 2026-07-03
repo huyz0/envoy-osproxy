@@ -172,3 +172,40 @@ fn constant_time_eq_matches_only_equal() {
     assert!(!constant_time_eq(b"secret", b"secrez"));
     assert!(!constant_time_eq(b"secret", b"secre"));
 }
+
+/// `with_admin_token` (the ext_proc enable path) authorizes exactly like the
+/// config-driven token.
+#[tokio::test]
+async fn with_admin_token_enables_the_plane() {
+    let observe = Observe::default().with_admin_token("s3cret");
+    let h = vec![
+        (":method".to_owned(), "POST".to_owned()),
+        (":path".to_owned(), ADMIN_PATH.to_owned()),
+        ("authorization".to_owned(), "Bearer s3cret".to_owned()),
+    ];
+    let reply = observe
+        .reserved_reply(&filter(), &h)
+        .await
+        .expect("an admin reply");
+    assert_eq!(reply.status, 200);
+}
+
+/// An unknown `/_evoxy/` path is not a reserved surface (no accidental catch-all).
+#[tokio::test]
+async fn unknown_reserved_prefix_path_is_not_answered() {
+    let observe = Observe::default();
+    assert!(observe
+        .reserved_reply(&filter(), &headers("/_evoxy/nope"))
+        .await
+        .is_none());
+}
+
+/// Every reserved path constant lives under the one prefix `reserved_reply` fast-
+/// exits on, so a future reserved path can't be added outside it and silently fall
+/// through to the data plane.
+#[test]
+fn reserved_paths_share_the_one_namespace() {
+    assert!(METRICS_PATH.starts_with(RESERVED_PREFIX));
+    assert!(ADMIN_PATH.starts_with(RESERVED_PREFIX));
+    assert!(EXPLAIN_PREFIX.starts_with(RESERVED_PREFIX));
+}

@@ -77,7 +77,10 @@ impl<R: Router> Filter<R> {
             return reply(503, r#"{"error":"async_write_unavailable"}"#);
         };
 
-        let mut capture = CaptureActions::new(req.path().to_owned());
+        // Seed with the full path+query: the brain's `set_path` carries the query
+        // (`?routing=`) when it rewrites, so an untransformed write must keep its
+        // query too — the produce key is then consistent across isolation modes.
+        let mut capture = CaptureActions::new(req.path_and_query.clone());
         let _decision = self.handle(req, &mut capture).await;
         if let Some((status, body)) = capture.immediate {
             return ImmediateReply { status, body };

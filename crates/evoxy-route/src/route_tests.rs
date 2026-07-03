@@ -751,3 +751,412 @@ async fn malformed_body_fails_closed_400() {
         Value::String("body_rewrite_failed".to_owned())
     );
 }
+
+// ---- Deep-review coverage: dispatcher, error paths, and shape mapping ---------
+
+/// The decision shape names every transform kind, including the id-only and
+/// inject+id combinations.
+#[tokio::test]
+async fn decision_shape_names_construct_id_and_both() {
+    // SharedIndex with no injected fields but an id rule → ConstructId only.
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}"));
+    let req = request("POST", "/shared/_doc", Some("acme"), br#"{"id":1}"#);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let resolved = router(shared("eu-1", "shared", Vec::new()), Some(id_rule.clone()))
+        .resolve(&parts.ctx())
+        .await
+        .unwrap();
+    assert!(crate::decision_shape(&resolved).contains("transform=construct_id"));
+
+    // SharedIndex with injected fields and an id rule → Both.
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let resolved = router(shared("eu-1", "shared", inject), Some(id_rule))
+        .resolve(&parts.ctx())
+        .await
+        .unwrap();
+    let shape = crate::decision_shape(&resolved);
+    assert!(shape.contains("transform=both"), "{shape}");
+    assert!(shape.contains("isolation=on"), "{shape}");
+}
+
+/// `explain` reports the unsupported-endpoint reject without resolving.
+#[tokio::test]
+async fn explain_reports_unsupported_endpoint() {
+    let req = request("POST", "/_search/scroll", Some("acme"), br"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let line = crate::explain(&shared_router(), &parts.ctx()).await;
+    assert!(line.contains("\"outcome\":\"reject\""), "{line}");
+    assert!(line.contains("501"), "{line}");
+}
+
+/// `explain` reports the migration write gate the same way `prepare` enforces it.
+#[tokio::test]
+async fn explain_reports_write_gate_409() {
+    let placement = Placement::DedicatedIndex {
+        cluster: ClusterId::from("eu-1"),
+        index: IndexName::from("orders-p1"),
+    };
+    let req = request("PUT", "/orders/_doc/1", Some("acme"), br#"{"k":1}"#);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let line = crate::explain(&blocking_router(placement), &parts.ctx()).await;
+    assert!(line.contains("\"status\":409"), "{line}");
+    assert!(line.contains("stale_epoch"), "{line}");
+}
+
+/// A malformed `_bulk` body fails closed 400 instead of forwarding garbage.
+#[tokio::test]
+async fn bulk_with_malformed_ndjson_fails_closed_400() {
+    let req = request("POST", "/_bulk", Some("acme"), b"not json\n");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let (status, body) = immediate(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["error"],
+        Value::String("body_rewrite_failed".to_owned())
+    );
+}
+
+/// A malformed `_mget` body fails closed 400.
+#[tokio::test]
+async fn mget_with_malformed_body_fails_closed_400() {
+    let req = request("POST", "/_mget", Some("acme"), b"[1,2,3]");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let (status, body) = immediate(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["error"],
+        Value::String("body_rewrite_failed".to_owned())
+    );
+}
+
+/// A malformed search body fails closed 400 (the query filter cannot be injected).
+#[tokio::test]
+async fn search_with_malformed_body_fails_closed_400() {
+    let req = request("POST", "/shared/_search", Some("acme"), b"[not json");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let (status, body) = immediate(prepare(&shared_router(), &parts.ctx()).await);
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["error"],
+        Value::String("body_rewrite_failed".to_owned())
+    );
+}
+
+/// The header-phase resolvers reject an unsupported endpoint exactly like
+/// `prepare`, so a header-phase route decision never diverges from the body phase.
+#[tokio::test]
+async fn header_phase_resolvers_reject_unsupported_endpoints() {
+    let req = request("POST", "/_search/scroll", Some("acme"), br"{}");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let err = crate::resolve_cluster(&shared_router(), &parts.ctx())
+        .await
+        .expect_err("unsupported endpoint must fail closed");
+    assert_eq!(err.status, 501);
+    let err = crate::resolve_target(&shared_router(), &parts.ctx())
+        .await
+        .expect_err("unsupported endpoint must fail closed");
+    assert_eq!(err.status, 501);
+}
+
+/// `shape_read_response` dispatches by endpoint: each shapeable read reshapes, a
+/// non-shapeable request returns `None` (forward the upstream body unchanged).
+#[tokio::test]
+async fn shape_read_response_dispatches_by_endpoint() {
+    let shape = |method: &str, path: &str, body: &'static [u8], upstream: &'static [u8]| {
+        let req = request(method, path, Some("acme"), body);
+        async move {
+            let parts = RequestParts::from_filter(&req, "r").unwrap();
+            crate::shape_read_response(&shared_router(), &parts.ctx(), upstream).await
+        }
+    };
+
+    // GetById: physical id unmapped to the logical one.
+    let shaped = shape(
+        "GET",
+        "/shared/_doc/1001",
+        b"",
+        br#"{"_index":"shared","_id":"acme:1001","found":true,"_source":{"_tenant":"acme","k":1}}"#,
+    )
+    .await
+    .expect("a shaped get");
+    let v: Value = serde_json::from_slice(&shaped).unwrap();
+    assert_eq!(v["_id"], Value::String("1001".to_owned()));
+
+    // Search: each hit reshaped.
+    assert!(shape(
+        "POST",
+        "/shared/_search",
+        br"{}",
+        br#"{"hits":{"hits":[{"_index":"shared","_id":"acme:1","_source":{"_tenant":"acme"}}]}}"#,
+    )
+    .await
+    .is_some());
+
+    // Bulk: each item's id/index unmapped.
+    assert!(shape(
+        "POST",
+        "/_bulk",
+        b"{\"index\":{\"_id\":\"1\"}}\n{\"k\":1}\n",
+        br#"{"took":1,"errors":false,"items":[{"index":{"_index":"shared","_id":"acme:1","status":201}}]}"#,
+    )
+    .await
+    .is_some());
+
+    // MultiGet and MultiSearch: each doc/response reshaped.
+    assert!(shape(
+        "POST",
+        "/_mget",
+        br#"{"docs":[{"_id":"1"}]}"#,
+        br#"{"docs":[{"_index":"shared","_id":"acme:1","found":true,"_source":{"_tenant":"acme"}}]}"#,
+    )
+    .await
+    .is_some());
+    assert!(shape(
+        "POST",
+        "/_msearch",
+        b"{}\n{}\n",
+        br#"{"responses":[{"hits":{"hits":[]}}]}"#,
+    )
+    .await
+    .is_some());
+
+    // DeleteById is not a shapeable read: forward the upstream body unchanged.
+    assert!(
+        shape("DELETE", "/shared/_doc/1", b"", br#"{"result":"deleted"}"#)
+            .await
+            .is_none()
+    );
+}
+
+/// A HEAD by-id existence probe forwards as HEAD (the method survives the rewrite).
+#[tokio::test]
+async fn head_by_id_forwards_as_head() {
+    let placement = Placement::DedicatedIndex {
+        cluster: ClusterId::from("eu-1"),
+        index: IndexName::from("orders-p1"),
+    };
+    let req = request("HEAD", "/orders/_doc/42", Some("acme"), b"");
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let prepared = upstream(prepare(&router(placement, None), &parts.ctx()).await);
+    assert_eq!(prepared.method, "HEAD");
+}
+
+/// An auto-id ingest (no id in the path) forwards as `POST /{index}/_doc`.
+#[tokio::test]
+async fn auto_id_ingest_posts_without_id() {
+    let placement = Placement::DedicatedIndex {
+        cluster: ClusterId::from("eu-1"),
+        index: IndexName::from("orders-p1"),
+    };
+    let req = request("POST", "/orders/_doc", Some("acme"), br#"{"k":1}"#);
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let prepared = upstream(prepare(&router(placement, None), &parts.ctx()).await);
+    assert_eq!(prepared.method, "POST");
+    assert_eq!(prepared.path, "/orders-p1/_doc");
+}
+
+/// Every routing `SpiError` maps to a stable fail-closed status and shape-only code.
+#[test]
+fn spi_errors_map_to_stable_status_and_code() {
+    use crate::{spi_code, spi_status};
+    let cases: Vec<(SpiError, u16, &str)> = vec![
+        (
+            SpiError::PartitionUnresolved { tried: Vec::new() },
+            400,
+            "partition_unresolved",
+        ),
+        (
+            SpiError::PrincipalAttrMissing { attr: "a".into() },
+            400,
+            "principal_attr_missing",
+        ),
+        (
+            SpiError::HeaderMissing { header: "h".into() },
+            400,
+            "header_missing",
+        ),
+        (
+            SpiError::UnsupportedEndpoint {
+                endpoint: osproxy_core::EndpointKind::Cursor,
+            },
+            501,
+            "unsupported_endpoint",
+        ),
+        (
+            SpiError::PlacementMissing {
+                partition: PartitionId::from("p"),
+            },
+            503,
+            "placement_missing",
+        ),
+        (
+            SpiError::PlacementBackend { retryable: true },
+            503,
+            "placement_backend",
+        ),
+        (
+            SpiError::IdRuleMissingPartition,
+            500,
+            "id_rule_missing_partition",
+        ),
+    ];
+    for (err, status, code) in &cases {
+        assert_eq!(spi_status(err), *status, "{err:?}");
+        assert_eq!(spi_code(err), *code, "{err:?}");
+    }
+}
+
+/// The internal invariant break maps to a 500 with its own code.
+#[test]
+fn prepare_error_maps_unresolved_injected_value() {
+    use crate::{prepare_code, prepare_status, PrepareError};
+    let err = PrepareError::UnresolvedInjectedValue;
+    assert_eq!(prepare_status(&err), 500);
+    assert_eq!(prepare_code(&err), "unresolved_injected_value");
+}
+
+/// The by-id method mapping is total: every classified method forwards faithfully.
+#[test]
+fn method_str_is_total() {
+    use crate::method_str;
+    use osproxy_spi::HttpMethod;
+    assert_eq!(method_str(HttpMethod::Put), "PUT");
+    assert_eq!(method_str(HttpMethod::Post), "POST");
+    assert_eq!(method_str(HttpMethod::Delete), "DELETE");
+    assert_eq!(method_str(HttpMethod::Head), "HEAD");
+    assert_eq!(method_str(HttpMethod::Get), "GET");
+}
+
+/// Bulk rewriting covers every verb, explicit ids, and delete lines (which carry
+/// no source): explicit ids are partition-scoped, deletes map the client id.
+#[tokio::test]
+async fn bulk_rewrites_explicit_ids_deletes_and_all_verbs() {
+    let inject = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let id_rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    let body = concat!(
+        r#"{"index":{"_index":"orders","_id":"7"}}"#,
+        "\n",
+        r#"{"id":7,"k":1}"#,
+        "\n",
+        r#"{"create":{"_id":"8"}}"#,
+        "\n",
+        r#"{"id":8,"k":2}"#,
+        "\n",
+        r#"{"update":{"_id":"9"}}"#,
+        "\n",
+        r#"{"id":9,"k":3}"#,
+        "\n",
+        r#"{"delete":{"_id":"7"}}"#,
+        "\n",
+    );
+    let req = request("POST", "/_bulk", Some("acme"), body.as_bytes());
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let prepared = upstream(
+        prepare(
+            &router(shared("eu-1", "shared", inject), Some(id_rule)),
+            &parts.ctx(),
+        )
+        .await,
+    );
+
+    let out = String::from_utf8(prepared.body).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    // 3 source-bearing items (2 lines each) + 1 delete (1 line).
+    assert_eq!(lines.len(), 7, "{out}");
+    // Explicit ids are partition-scoped on every verb, deletes included.
+    assert!(
+        lines[0].contains(r#""index""#) && lines[0].contains("acme:7"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[2].contains(r#""create""#) && lines[2].contains("acme:8"),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[4].contains(r#""update""#) && lines[4].contains("acme:9"),
+        "{}",
+        lines[4]
+    );
+    assert!(
+        lines[6].contains(r#""delete""#) && lines[6].contains("acme:7"),
+        "{}",
+        lines[6]
+    );
+    // Sources got the isolation field injected.
+    assert!(lines[1].contains(r#""_tenant":"acme""#), "{}", lines[1]);
+}
+
+/// Bulk against a dedicated placement (no id rule) keeps client ids untouched.
+#[tokio::test]
+async fn bulk_without_id_rule_keeps_client_ids() {
+    let placement = Placement::DedicatedIndex {
+        cluster: ClusterId::from("eu-1"),
+        index: IndexName::from("orders-acme"),
+    };
+    let body = concat!(
+        r#"{"index":{"_id":"7"}}"#,
+        "\n",
+        r#"{"k":1}"#,
+        "\n",
+        r#"{"delete":{"_id":"9"}}"#,
+        "\n",
+    );
+    let req = request("POST", "/_bulk", Some("acme"), body.as_bytes());
+    let parts = RequestParts::from_filter(&req, "r").unwrap();
+    let prepared = upstream(prepare(&router(placement, None), &parts.ctx()).await);
+
+    let out = String::from_utf8(prepared.body).unwrap();
+    assert!(out.contains(r#""_id":"7""#), "{out}");
+    assert!(out.contains(r#""_id":"9""#), "{out}");
+    assert!(out.contains(r#""_index":"orders-acme""#), "{out}");
+    assert!(
+        !out.contains("acme:"),
+        "no partition scoping without a rule: {out}"
+    );
+}
+
+/// The transform applier covers the inject-only and construct-only arms, and
+/// refuses an unresolved context-derived value as an internal error.
+#[test]
+fn transform_apply_covers_each_arm() {
+    use crate::transform;
+    use osproxy_spi::BodyTransform;
+
+    // Inject-only: field spliced, no id.
+    let fields = vec![InjectedField::new(
+        FieldName::from("_tenant"),
+        InjectedValue::PartitionId,
+    )];
+    let t = transform::apply(br#"{"k":1}"#, &BodyTransform::Inject(fields), "acme").unwrap();
+    assert!(t.id.is_none());
+    assert!(String::from_utf8(t.body)
+        .unwrap()
+        .contains(r#""_tenant":"acme""#));
+
+    // ConstructId-only: id built, body untouched.
+    let rule = DocIdRule::new(IdTemplate::new("{partition}:{body.id}")).with_routing(true);
+    let t = transform::apply(br#"{"id":7}"#, &BodyTransform::ConstructId(rule), "acme")
+        .expect("construct-id transform succeeds");
+    assert_eq!(t.id.as_deref(), Some("acme:7"));
+    assert_eq!(t.routing.as_deref(), Some("acme"));
+    assert_eq!(t.body, br#"{"id":7}"#);
+
+    // An unresolved FromHeader reaching the transform is an invariant break.
+    let unresolved = vec![InjectedField::new(
+        FieldName::from("_who"),
+        InjectedValue::FromHeader("x-user".into()),
+    )];
+    let err = transform::apply(br#"{"k":1}"#, &BodyTransform::Inject(unresolved), "acme").err();
+    assert!(matches!(
+        err,
+        Some(crate::PrepareError::UnresolvedInjectedValue)
+    ));
+}

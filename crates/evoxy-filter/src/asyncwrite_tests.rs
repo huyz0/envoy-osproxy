@@ -187,3 +187,25 @@ fn wants_async_matches_the_header() {
     )]));
     assert!(!wants_async(&[]));
 }
+
+/// The produced record's key is the brain's physical path, query included: a
+/// shared-index write carries its constructed `?routing=` on the key.
+#[tokio::test]
+async fn produced_key_is_the_physical_path_with_query() {
+    let filter = crate::reference_filter(&FilterConfig::from_json(
+        r#"{"shared_index":"orders_shared","inject_field":"_t","id_template":"{partition}:{body.id}","partition_header":"x-tenant"}"#,
+    ));
+    let sink = RecordingSink::default();
+    let reply = filter
+        .async_write(
+            &write_req("/orders/_doc/7", Some("acme"), br#"{"id":7}"#),
+            Some(&sink),
+        )
+        .await;
+    assert_eq!(reply.status, 202);
+    let acked = sink.acked.lock().unwrap();
+    // Physical index, partition-scoped id, and the constructed routing query.
+    assert_eq!(acked[0].0, "/orders_shared/_doc/acme%3A7?routing=acme");
+    // The injected isolation field rides the payload.
+    assert!(String::from_utf8_lossy(&acked[0].1).contains(r#""_t":"acme""#));
+}

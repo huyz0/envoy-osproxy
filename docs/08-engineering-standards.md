@@ -14,6 +14,7 @@ file records what is specific to this project.
 | `doc` | `cargo doc` with `-D warnings` + doctests; every public item documented (`#![deny(missing_docs)]`). |
 | `budgets` | Source files ≤ 400 lines unless they carry a `// JUSTIFY` line. |
 | `bench` | iai-callgrind instruction-count benches (skipped without valgrind). |
+| `coverage` | Line coverage >= 90% via `cargo llvm-cov` (`xtask` excluded — build tooling, not shipped code). A separate command and CI job, not part of `ci`, because instrumented recompiles take minutes. |
 
 ## Lints that are load-bearing here
 

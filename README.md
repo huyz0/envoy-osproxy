@@ -72,6 +72,7 @@ through all three steps.
 ```sh
 scripts/setup-hooks.sh   # once: install the commit and pre-commit gate
 cargo xtask ci           # fmt, clippy, arch, test, doc, budgets
+cargo xtask coverage     # line-coverage gate: >=90% (cargo-llvm-cov, xtask excluded)
 cargo xtask bench        # instruction-count microbenchmarks (needs valgrind)
 cargo xtask module-image # build the dynamic module into an Envoy image (Docker)
 ```

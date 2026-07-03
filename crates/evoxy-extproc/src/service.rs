@@ -145,3 +145,7 @@ impl<R: Router> ExternalProcessor for ExtProcService<R> {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod service_tests;

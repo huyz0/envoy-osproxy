@@ -125,3 +125,86 @@ fn no_default_fails_closed_when_unresolved() {
         .resolve_partition(&ctx(&principal, &id, &headers), BodyDoc::new(b"{}"))
         .is_err());
 }
+
+// ---- Deep-review coverage: migration gate, partition-source edges, parsing ----
+
+/// The migration write gate: a partition in cutover has writes held; every other
+/// partition (and every other phase) admits, and the phase rides the placement.
+#[tokio::test]
+async fn cutover_holds_writes_and_carries_the_phase() {
+    let frozen = ReferenceTenancy::new("os", "http://os:9200", "x-tenant")
+        .with_migration("frozen", MigrationPhase::Cutover);
+
+    // The migrating partition is held; an unrelated one admits.
+    assert!(
+        !frozen
+            .admit_write(&PartitionId::from("frozen"), Epoch::new(1))
+            .await
+    );
+    assert!(
+        frozen
+            .admit_write(&PartitionId::from("acme"), Epoch::new(1))
+            .await
+    );
+
+    // The phase is carried on the placement for the migrating partition only.
+    let at = frozen
+        .placement_for(&PartitionId::from("frozen"))
+        .await
+        .unwrap();
+    assert_eq!(at.phase, MigrationPhase::Cutover);
+    let at = frozen
+        .placement_for(&PartitionId::from("acme"))
+        .await
+        .unwrap();
+    assert_eq!(at.phase, MigrationPhase::Settled);
+
+    // A draining partition still admits (only cutover rejects).
+    let draining = ReferenceTenancy::new("os", "http://os:9200", "x-tenant")
+        .with_migration("d", MigrationPhase::Draining);
+    assert!(
+        draining
+            .admit_write(&PartitionId::from("d"), Epoch::new(1))
+            .await
+    );
+}
+
+/// An explicit `partition_source: header` (any non-principal value) selects the
+/// header source even when the legacy bool would say otherwise.
+#[test]
+fn explicit_header_source_overrides_the_legacy_bool() {
+    let cfg =
+        FilterConfig::from_json(r#"{"partition_source":"header","partition_from_principal":true}"#);
+    assert!(!cfg.partition_from_principal);
+    assert!(!cfg.partition_from_path);
+}
+
+/// An explicit `dedicated_cluster` wins even when `shared_index` is present.
+#[test]
+fn explicit_dedicated_cluster_overrides_the_inference() {
+    let cfg = FilterConfig::from_json(r#"{"isolation":"dedicated_cluster","shared_index":"s"}"#);
+    assert!(matches!(cfg.isolation, Isolation::DedicatedCluster));
+}
+
+/// Non-string entries in `passthrough_indices` are skipped, not an error.
+#[test]
+fn passthrough_array_skips_non_strings() {
+    let cfg = FilterConfig::from_json(r#"{"passthrough_indices":["catalog",7,null,"logs"]}"#);
+    assert_eq!(cfg.passthrough_indices, vec!["catalog", "logs"]);
+}
+
+/// Principal source with no presented principal falls back to `default_partition`.
+#[test]
+fn empty_principal_falls_back_to_the_default_partition() {
+    let tenancy = ReferenceTenancy::from_config(&FilterConfig::from_json(
+        r#"{"partition_source":"principal","default_partition":"shared"}"#,
+    ));
+    // An anonymous request carries an empty principal id.
+    let principal = Principal::new(PrincipalId::from(""));
+    let id = RequestId::from("r");
+    let headers: Vec<(String, String)> = Vec::new();
+    let partition = tenancy
+        .resolve_partition(&ctx(&principal, &id, &headers), BodyDoc::new(b"{}"))
+        .unwrap();
+    assert_eq!(partition.as_str(), "shared");
+}

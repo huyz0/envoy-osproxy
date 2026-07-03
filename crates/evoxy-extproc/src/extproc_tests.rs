@@ -537,3 +537,235 @@ async fn sync_write_is_unaffected_by_a_configured_sink() {
     // Forwarded upstream: a RequestBody response with mutations, not a 202.
     assert!(matches!(resp.response, Some(Resp::RequestBody(_))));
 }
+
+// ---- Deep-review coverage: response phases, trailers, actions, convert --------
+
+fn response_headers_msg(end_of_stream: bool) -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(Req::ResponseHeaders(HttpHeaders {
+            end_of_stream,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn response_body_msg(body: &[u8]) -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(Req::ResponseBody(HttpBody {
+            body: body.to_vec(),
+            end_of_stream: true,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+/// The response-headers phase emits the shape-only decision header for a resolved
+/// request, and stays silent when the directive plane has silenced it.
+#[tokio::test]
+async fn response_phase_emits_and_silences_the_decision_header() {
+    let filter = filter();
+    let mut state = StreamState::default();
+    let headers = headers_msg(
+        &[
+            (":method", "PUT"),
+            (":path", "/orders/_doc/42"),
+            ("x-tenant", "acme"),
+        ],
+        false,
+    );
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
+
+    // Default directives: the decision header is emitted.
+    let resp = pm(
+        &filter,
+        &Observe::default(),
+        &mut state,
+        response_headers_msg(false),
+    )
+    .await;
+    let common = match resp.response {
+        Some(Resp::ResponseHeaders(h)) => h.response,
+        _ => None,
+    }
+    .expect("a ResponseHeaders reply");
+    let decision = common
+        .header_mutation
+        .as_ref()
+        .and_then(|m| m.set_headers.first())
+        .and_then(|o| o.header.as_ref())
+        .expect("the decision header");
+    assert_eq!(decision.key, "x-evoxy-decision");
+    assert!(String::from_utf8_lossy(&decision.raw_value).contains("transform="));
+
+    // Silenced: no header mutation at all.
+    let silenced = Observe::from_config(&ObserveConfig {
+        admin_token: None,
+        emit_decision: false,
+    });
+    let resp = pm(&filter, &silenced, &mut state, response_headers_msg(false)).await;
+    let common = match resp.response {
+        Some(Resp::ResponseHeaders(h)) => h.response,
+        _ => None,
+    }
+    .expect("a ResponseHeaders reply");
+    assert!(common.header_mutation.is_none());
+}
+
+/// The response-body phase reshapes a shared-index read into the client's logical
+/// view and drops the stale upstream `content-length`.
+#[tokio::test]
+async fn response_body_phase_reshapes_a_shared_index_read() {
+    let filter = evoxy_filter::reference_filter(&evoxy_filter::FilterConfig::from_json(
+        r#"{"cluster":"opensearch","shared_index":"orders_shared","inject_field":"_tenant","partition_header":"x-tenant"}"#,
+    ));
+    let mut state = StreamState::default();
+    let headers = headers_msg(
+        &[
+            (":method", "GET"),
+            (":path", "/orders/_doc/42"),
+            ("x-tenant", "acme"),
+        ],
+        true,
+    );
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
+
+    let upstream = br#"{"_index":"orders_shared","_id":"acme:42","found":true,"_source":{"_tenant":"acme","k":1}}"#;
+    let resp = pm(
+        &filter,
+        &Observe::default(),
+        &mut state,
+        response_body_msg(upstream),
+    )
+    .await;
+    let common = match resp.response {
+        Some(Resp::ResponseBody(b)) => b.response,
+        _ => None,
+    }
+    .expect("a ResponseBody reply");
+    let shaped = match common.body_mutation.and_then(|m| m.mutation) {
+        Some(body_mutation::Mutation::Body(bytes)) => Some(bytes),
+        _ => None,
+    }
+    .expect("a reshaped body");
+    let text = String::from_utf8(shaped).unwrap();
+    assert!(text.contains(r#""_id":"42""#), "{text}");
+    assert!(!text.contains("_tenant"), "{text}");
+    // The reshape changed the length, so the upstream content-length is dropped.
+    let removed = common.header_mutation.expect("a header mutation");
+    assert_eq!(removed.remove_headers, vec!["content-length".to_owned()]);
+}
+
+/// A response body that needs no reshaping passes through unchanged (no mutation).
+#[tokio::test]
+async fn response_body_phase_passes_a_plain_body_through() {
+    let filter = filter(); // dedicated-cluster: nothing to reshape on a delete
+    let mut state = StreamState::default();
+    let headers = headers_msg(
+        &[
+            (":method", "DELETE"),
+            (":path", "/orders/_doc/42"),
+            ("x-tenant", "acme"),
+        ],
+        true,
+    );
+    let _ = pm(&filter, &Observe::default(), &mut state, headers).await;
+    let resp = pm(
+        &filter,
+        &Observe::default(),
+        &mut state,
+        response_body_msg(br#"{"result":"deleted"}"#),
+    )
+    .await;
+    let common = match resp.response {
+        Some(Resp::ResponseBody(b)) => b.response,
+        _ => None,
+    }
+    .expect("a ResponseBody reply");
+    assert!(common.body_mutation.is_none());
+    assert!(common.header_mutation.is_none());
+}
+
+/// Trailers continue unmodified, replying with the phase-matched oneof (Envoy's
+/// ext_proc contract expects the response variant to match the request phase).
+#[tokio::test]
+async fn trailers_continue_unmodified() {
+    let mut state = StreamState::default();
+
+    let req_msg = ProcessingRequest {
+        request: Some(Req::RequestTrailers(crate::extproc::HttpTrailers::default())),
+        ..Default::default()
+    };
+    let resp = pm(&filter(), &Observe::default(), &mut state, req_msg).await;
+    assert!(matches!(resp.response, Some(Resp::RequestTrailers(_))));
+
+    let resp_msg = ProcessingRequest {
+        request: Some(Req::ResponseTrailers(
+            crate::extproc::HttpTrailers::default(),
+        )),
+        ..Default::default()
+    };
+    let resp = pm(&filter(), &Observe::default(), &mut state, resp_msg).await;
+    assert!(matches!(resp.response, Some(Resp::ResponseTrailers(_))));
+}
+
+/// `ExtProcActions::finish` emits a routing mutation only for what actually
+/// changed: an unchanged request line is not re-emitted, a changed one is, and the
+/// placement endpoint lands on `:authority`.
+#[test]
+fn actions_finish_emits_only_real_changes() {
+    use crate::actions::ExtProcActions;
+    use evoxy_filter::EnvoyActions;
+
+    // Nothing recorded: no header mutation at all.
+    let empty = ExtProcActions::default();
+    let common = empty.finish("PUT", "/orders/_doc/1").expect("no immediate");
+    assert!(common.header_mutation.is_none());
+    assert!(common.body_mutation.is_none());
+
+    // A changed method/path/host and a removed header are all emitted.
+    let mut acts = ExtProcActions::default();
+    acts.set_method("POST");
+    acts.set_path("/physical/_doc/1?routing=acme");
+    acts.set_upstream_host("eu.internal:9200");
+    acts.remove_header("x-strip-me");
+    let common = acts.finish("PUT", "/orders/_doc/1").expect("no immediate");
+    let mutation = common.header_mutation.expect("a header mutation");
+    let keys: Vec<&str> = mutation
+        .set_headers
+        .iter()
+        .filter_map(|o| o.header.as_ref())
+        .map(|h| h.key.as_str())
+        .collect();
+    assert!(keys.contains(&":method"), "{keys:?}");
+    assert!(keys.contains(&":path"), "{keys:?}");
+    assert!(keys.contains(&":authority"), "{keys:?}");
+    assert_eq!(mutation.remove_headers, vec!["x-strip-me".to_owned()]);
+}
+
+/// `extract_headers` prefers the byte `raw_value` and tolerates a missing map.
+#[test]
+fn extract_headers_reads_raw_values_and_missing_map() {
+    use envoy_types::pb::envoy::config::core::v3::HeaderMap;
+
+    let headers = HttpHeaders {
+        headers: Some(HeaderMap {
+            headers: vec![HeaderValue {
+                key: ":path".to_owned(),
+                value: String::new(),
+                raw_value: b"/orders/_doc/1".to_vec(),
+            }],
+        }),
+        ..Default::default()
+    };
+    let extracted = crate::convert::extract_headers(&headers);
+    assert_eq!(
+        extracted,
+        vec![(":path".to_owned(), "/orders/_doc/1".to_owned())]
+    );
+
+    // No header map at all: an empty list, not a panic.
+    let none = HttpHeaders::default();
+    assert!(crate::convert::extract_headers(&none).is_empty());
+}

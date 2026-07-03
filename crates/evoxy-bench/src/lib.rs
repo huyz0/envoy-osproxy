@@ -422,3 +422,71 @@ mod tests {
         assert!(judge_scalability(&curve, &ScalabilityThresholds::provisional()).pass);
     }
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    /// The JSON renderers carry every field an operator/LLM judge keys on.
+    #[test]
+    fn profile_and_verdict_render_their_fields() {
+        let samples = vec![1_000_000, 2_000_000, 3_000_000];
+        let baseline = LatencySummary::from_nanos(&samples).expect("a summary");
+        let proxy = LatencySummary::from_nanos(&samples).expect("a summary");
+        let profile = NfrProfile {
+            samples: 3,
+            concurrency: 1,
+            baseline,
+            proxy,
+            pool_reuse_rate: 1.0,
+            throughput_rps: 100.0,
+        };
+        let json = profile.to_json();
+        for key in [
+            "added_p50_ns",
+            "added_p99_ns",
+            "baseline",
+            "proxy",
+            "pool_reuse_rate",
+            "throughput_rps",
+            "p90_ns",
+        ] {
+            assert!(json.contains(key), "missing {key} in {json}");
+        }
+
+        let verdict = judge(&profile, &NfrThresholds::provisional());
+        let vjson = verdict.to_json();
+        assert!(vjson.contains("\"pass\""), "{vjson}");
+        assert!(vjson.contains("\"findings\""), "{vjson}");
+        assert!(vjson.contains("\"nfr\""), "{vjson}");
+    }
+
+    /// The scalability ratios guard their zero denominators instead of dividing.
+    #[test]
+    fn curve_ratios_guard_zero_baselines() {
+        let zero = LatencySummary {
+            count: 1,
+            min_ns: 0,
+            max_ns: 0,
+            mean_ns: 0,
+            p50_ns: 0,
+            p90_ns: 0,
+            p99_ns: 0,
+        };
+        let points = vec![
+            ScalabilityPoint {
+                concurrency: 1,
+                latency: zero,
+                throughput_rps: 0.0,
+            },
+            ScalabilityPoint {
+                concurrency: 8,
+                latency: zero,
+                throughput_rps: 100.0,
+            },
+        ];
+        let curve = ScalabilityCurve::new(points).expect("two points");
+        assert!((curve.tail_amplification() - 1.0).abs() < f64::EPSILON);
+        assert!(curve.throughput_scaling().abs() < f64::EPSILON);
+    }
+}
