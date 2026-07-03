@@ -21,6 +21,11 @@ image's, because glibc is forward-compatible only. The provided Docker build use
 Debian bookworm (glibc 2.36), which loads on the Envoy image's Ubuntu 24.04
 (glibc 2.39).
 
+So the prerequisites are: a stable Rust toolchain, `clang` and `libclang`, and (for
+the image-baking step below) Docker. The `cargo xtask module-image` command builds
+the `.so` inside a bookworm container, so it satisfies the glibc constraint for you;
+Docker is the only host requirement for that path.
+
 ## The one command
 
 The repository builds the module and bakes it into a stock Envoy image in one step:

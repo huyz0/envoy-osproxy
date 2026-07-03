@@ -8,6 +8,18 @@ process isolation and an independent deploy, at the cost of one out-of-process h
 The service is generic over your tenancy, so a custom `TenancySpi` works the same
 as the built-in one.
 
+## Build prerequisites
+
+A stable Rust toolchain is all you need. ext_proc is pure Rust over `tonic`, so
+unlike the dynamic module it needs no `libclang`, no `protoc`, no Envoy SDK, and no
+glibc pinning: your server is an ordinary binary you run next to Envoy, and it
+compiles in the normal workspace gate. TLS termination is Envoy's job, so the server
+links no wire crypto either.
+
+The one thing to install beyond Rust is a C compiler (`cc`/`gcc`), which a few
+transitive crates build against. If you package the server in a container, any
+standard Rust build image already has it.
+
 ## The server
 
 An ext_proc server is a `tokio` binary that serves `evoxy_extproc::ExtProcService`
