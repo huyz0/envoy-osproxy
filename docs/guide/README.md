@@ -32,13 +32,17 @@ there is no other repository to check out.
 There is no binary to `docker run`. To put envoy-osproxy in front of OpenSearch you
 do three things:
 
-1. Implement the tenancy, or use the built-in reference tenancy for a no-code start.
+1. Decide the tenancy. Many setups need no code: the built-in reference tenancy is
+   driven entirely by config (see [Configuration-only mode](08-config-only.md)). For
+   anything beyond it, [implement a tenancy](02-tenancy.md).
 2. Build an artifact: an out-of-process ext_proc gRPC server, or an in-process
    dynamic-module `.so`.
 3. Configure Envoy: load the artifact and map your logical clusters to real
    OpenSearch upstreams.
 
-Start with [Implementing a tenancy](02-tenancy.md), then build a backend
+If the reference tenancy fits, start with
+[Configuration-only mode](08-config-only.md). Otherwise start with
+[Implementing a tenancy](02-tenancy.md), then build a backend
 ([ext_proc](03-build-extproc.md) or [dynamic module](04-build-module.md)).
 
 ## Two backends, one brain
@@ -59,7 +63,10 @@ Both are verified end to end through a stock, unmodified Envoy. The
 ## Where to go next
 
 - [Architecture](01-architecture.md) covers the components and how a request flows.
-- [Implementing a tenancy](02-tenancy.md) is the code you write.
+- [Configuration-only mode](08-config-only.md) is the no-code path: drive the
+  reference tenancy from `filter_config`.
+- [Implementing a tenancy](02-tenancy.md) is the code you write when config is not
+  enough.
 - [Building the ext_proc backend](03-build-extproc.md) and
   [Building the dynamic module](04-build-module.md) are the two deployment paths.
 - [ext_proc vs. dynamic module](05-backends.md) helps you pick one.

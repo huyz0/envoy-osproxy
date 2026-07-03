@@ -3,12 +3,13 @@
 //! `.so` into a STOCK `envoyproxy/envoy:v1.37.0` (no fork, no rebuild) and drives
 //! real requests through it into a real OpenSearch.
 //!
-//! Five tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
-//! first with `cargo xtask module-image`, then run with `--ignored`). The last
-//! three prove per-tenant upstream routing: `per_tenant_cluster_...` via header-
-//! matched clusters, `dynamic_forward_proxy_dials_the_tenancy_endpoint` via the
-//! tenancy's endpoint dialed with no cluster defined, and
-//! `dynamic_forward_proxy_dials_an_https_upstream` over TLS (the AWS-ALB shape).
+//! Six tests, all `#[ignore]`'d (need Docker + the `evoxy-envoy` image; build it
+//! first with `cargo xtask module-image`, then run with `--ignored`). Beyond the
+//! write/read and shared-index isolation cases, they cover the config-only
+//! multi-tenancy patterns: `dedicated_index_...` (per-tenant physical index),
+//! `per_tenant_cluster_...` (header-matched clusters),
+//! `dynamic_forward_proxy_dials_the_tenancy_endpoint` (endpoint dialed with no
+//! cluster defined), and `dynamic_forward_proxy_dials_an_https_upstream` (TLS/ALB).
 //! - `write_then_read_through_module` — dedicated mode; a write and a read flow
 //!   through the in-process module and round-trip.
 //! - `shared_index_isolates_tenants_through_module` — shared-index mode; two
@@ -335,6 +336,63 @@ async fn start_envoy(os_port: u16, filter_config: &str) -> (ContainerAsync<Gener
         .expect("evoxy-envoy starts (build it first: cargo xtask module-image)");
     let port = envoy.get_host_port_ipv4(10000).await.unwrap();
     (envoy, format!("http://127.0.0.1:{port}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker + the evoxy-envoy image; run with --ignored"]
+async fn dedicated_index_gives_each_tenant_its_own_physical_index() {
+    // Config-only `dedicated_index` mode: one cluster, a per-tenant physical index
+    // from `index_template`. Two tenants write the same logical `/orders/_doc/1`;
+    // each lands in its own physical index (`orders-acme`, `orders-globex`), and a
+    // read comes back in the logical view. No custom SPI.
+    let opensearch = start_opensearch().await;
+    let os_port = opensearch.get_host_port_ipv4(9200).await.unwrap();
+    let config = r#"{"isolation":"dedicated_index","partition_header":"x-tenant","index_template":"orders-{partition}"}"#;
+    let (_envoy, base) = start_envoy(os_port, config).await;
+    let http = reqwest::Client::new();
+
+    for (tenant, who) in [("acme", "a"), ("globex", "g")] {
+        let put = http
+            .put(format!("{base}/orders/_doc/1"))
+            .header("x-tenant", tenant)
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"who":"{who}"}}"#))
+            .send()
+            .await
+            .expect("PUT through module");
+        assert!(put.status().is_success(), "{tenant} write {}", put.status());
+    }
+
+    // Each tenant's doc is physically in its own index (read OpenSearch directly).
+    assert_eq!(
+        source_at(&http, os_port, "orders-acme", "1")
+            .await
+            .expect("acme doc")["who"],
+        json!("a")
+    );
+    assert_eq!(
+        source_at(&http, os_port, "orders-globex", "1")
+            .await
+            .expect("globex doc")["who"],
+        json!("g")
+    );
+
+    // A read back through the module returns the logical index, not the physical one.
+    let got: Value = http
+        .get(format!("{base}/orders/_doc/1"))
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("GET through module")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        got["_index"],
+        json!("orders"),
+        "logical index restored: {got}"
+    );
+    assert_eq!(got["_source"]["who"], json!("a"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -696,6 +754,23 @@ async fn dynamic_forward_proxy_dials_an_https_upstream() {
         doc_found(&http, os_port, "1").await,
         "doc written over the HTTPS upstream"
     );
+}
+
+/// The `_source` of `/{index}/_doc/{id}` read directly from the OpenSearch at
+/// `port`, or `None` if the document is not there.
+async fn source_at(http: &reqwest::Client, port: u16, index: &str, id: &str) -> Option<Value> {
+    let got: Value = http
+        .get(format!("http://127.0.0.1:{port}/{index}/_doc/{id}"))
+        .send()
+        .await
+        .expect("direct GET")
+        .json()
+        .await
+        .expect("json");
+    got["found"]
+        .as_bool()
+        .unwrap_or(false)
+        .then(|| got["_source"].clone())
 }
 
 /// Whether `/orders/_doc/{id}` exists directly on the OpenSearch at `port`.

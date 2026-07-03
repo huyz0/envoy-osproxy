@@ -1,5 +1,10 @@
 # Implementing a tenancy
 
+Before writing any code, check [Configuration-only mode](08-config-only.md): the
+built-in reference tenancy covers header or mTLS partitioning, dedicated-cluster,
+per-tenant-index, and shared-index isolation from `filter_config` alone. Implement
+the trait below only when your needs go past it.
+
 Your placement and isolation logic is a Rust type that implements one trait,
 `osproxy_spi::TenancySpi`. This is the same trait the standalone osproxy uses, so
 the logic is identical whether it runs in osproxy's server or inside Envoy. You do

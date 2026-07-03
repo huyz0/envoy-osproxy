@@ -14,7 +14,7 @@
 mod reference;
 
 pub use osproxy_spi::MigrationPhase;
-pub use reference::{FilterConfig, ReferenceTenancy};
+pub use reference::{FilterConfig, Isolation, ReferenceTenancy};
 
 use evoxy_abi::FilterRequest;
 use evoxy_route::{prepare, Forward};

@@ -212,14 +212,13 @@ async fn envoy_mirrors_the_transformed_request_to_the_bridge() {
     // Shared-index mode, so the write is visibly transformed: physical index
     // `orders_shared`, partition-scoped id `acme:1`, injected `_tenant`.
     let config = FilterConfig {
+        isolation: evoxy_filter::Isolation::SharedIndex,
         cluster: "opensearch".to_owned(),
-        cluster_by_partition: Default::default(),
-        endpoint_by_partition: Default::default(),
         endpoint: "http://unused".to_owned(),
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),
-        inject_field: "_tenant".to_owned(),
         partition_from_principal: false,
+        ..FilterConfig::default()
     };
     let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
     let svc_port = spawn_service(ExtProcService::new(filter));

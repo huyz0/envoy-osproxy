@@ -72,6 +72,7 @@ export default defineConfig({
           label: "Guide",
           items: [
             { label: "Architecture", link: "/01-architecture/" },
+            { label: "Configuration-only mode (no code)", link: "/08-config-only/" },
             { label: "Implementing a tenancy", link: "/02-tenancy/" },
             { label: "Building the ext_proc backend", link: "/03-build-extproc/" },
             { label: "Building the dynamic module", link: "/04-build-module/" },

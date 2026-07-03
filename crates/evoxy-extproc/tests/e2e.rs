@@ -251,14 +251,13 @@ async fn shared_index_isolates_tenants() {
 
     // Shared-index mode: both tenants share physical index `orders_shared`.
     let config = FilterConfig {
+        isolation: evoxy_filter::Isolation::SharedIndex,
         cluster: "opensearch".to_owned(),
-        cluster_by_partition: Default::default(),
-        endpoint_by_partition: Default::default(),
         endpoint: "http://unused".to_owned(),
         partition_header: "x-tenant".to_owned(),
         shared_index: Some("orders_shared".to_owned()),
-        inject_field: "_tenant".to_owned(),
         partition_from_principal: false,
+        ..FilterConfig::default()
     };
     let filter = Filter::new(TenancyRouter::new(ReferenceTenancy::from_config(&config)));
     // Enable the runtime directive plane (the M7 "act" surface) behind a token.
