@@ -74,3 +74,5 @@ Both are verified end to end through a stock, unmodified Envoy. The
   transform-cost numbers.
 - [Admin and observability](07-observability.md) covers the shape-only metrics,
   decision header, explain dry-run, and the runtime directive plane.
+- [Capture and async fan-out](09-capture-and-fanout.md) mirrors traffic to a bridge
+  and on to Kafka, no code.

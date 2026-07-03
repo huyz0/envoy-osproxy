@@ -9,6 +9,7 @@ members = [
     "crates/evoxy-bridge",
     "crates/evoxy-bench",
     "examples/custom-tenancy",
+    "examples/capture-bridge",
     "xtask",
 ]
 

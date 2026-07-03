@@ -1,0 +1,71 @@
+# Example Envoy bootstrap: CAPTURE / ASYNC FAN-OUT via request mirroring.
+#
+# Capture (audit, replay, analytics) and async fan-out (ship writes to Kafka for a
+# downstream applier) are the same mechanism in evoxy, and neither needs a custom
+# SPI. Envoy's built-in `request_mirror_policies` shadows every request to a bridge
+# cluster, fire-and-forget, while the primary still goes to OpenSearch. Because the
+# evoxy filter runs first, the mirrored request is already transformed (physical
+# index, partition-scoped id, injected tenancy field), so the captured record is the
+# isolated, physical form.
+#
+# Run the evoxy-bridge (see examples/capture-bridge) as the `bridge` cluster; it
+# receives the mirrored request and produces it to Kafka. This example shows the
+# dynamic-module backend, but mirroring is a route setting, so it works identically
+# with ext_proc.
+static_resources:
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: opensearch
+                            # Shadow every request to the bridge. Add
+                            # `runtime_fraction` to sample a percentage instead.
+                            request_mirror_policies:
+                              - cluster: bridge
+                http_filters:
+                  - name: envoy.filters.http.dynamic_modules
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config: { name: evoxy_module }
+                      filter_name: evoxy
+                      filter_config:
+                        "@type": type.googleapis.com/google.protobuf.StringValue
+                        value: |
+                          {
+                            "partition_header": "x-tenant",
+                            "shared_index": "orders_shared",
+                            "inject_field": "_tenant"
+                          }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: opensearch
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: opensearch
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: opensearch.internal, port_value: 9200 } } }
+    # The evoxy-bridge (examples/capture-bridge): receives the mirrored request and
+    # produces it to Kafka. Fire-and-forget, so bridge slowness never affects the
+    # client's write.
+    - name: bridge
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: bridge
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: bridge.internal, port_value: 8088 } } }

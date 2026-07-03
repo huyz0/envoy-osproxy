@@ -4,7 +4,8 @@ envoy-osproxy is a toolkit, not a turnkey proxy. There is no binary to run
 directly. To put it in front of your OpenSearch you implement a tenancy (or use the
 reference tenancy), build an artifact, and configure Envoy. This directory has a
 compiling tenancy example ([`custom-tenancy/`](custom-tenancy)), a complete
-custom-tenancy module cdylib ([`custom-module/`](custom-module)), and two Envoy
+custom-tenancy module cdylib ([`custom-module/`](custom-module)), a runnable
+capture / async fan-out bridge ([`capture-bridge/`](capture-bridge)), and the Envoy
 bootstraps ([`envoy/`](envoy)). The [user guide](https://huyz0.github.io/envoy-osproxy/)
 covers each step in full.
 

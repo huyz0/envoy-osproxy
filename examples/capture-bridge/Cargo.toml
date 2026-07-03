@@ -1,0 +1,18 @@
+[package]
+name = "capture-bridge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+description = "Example capture / async fan-out bridge: receives Envoy-mirrored requests and produces them to Kafka over evoxy-bridge. No tenancy code (that ran in the filter already)."
+
+[dependencies]
+# The fan-out core. Reuses osproxy's Producer seam, so the same Bridge plugs the
+# real KrafkaProducer in for InMemoryProducer with one line.
+evoxy-bridge = { path = "../../crates/evoxy-bridge" }
+osproxy-kafka = "=1.0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros"] }
+
+[lints]
+workspace = true

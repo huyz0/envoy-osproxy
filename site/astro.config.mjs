@@ -79,6 +79,7 @@ export default defineConfig({
             { label: "ext_proc vs. dynamic module", link: "/05-backends/" },
             { label: "Benchmarks", link: "/06-benchmarks/" },
             { label: "Admin and observability", link: "/07-observability/" },
+            { label: "Capture and async fan-out", link: "/09-capture-and-fanout/" },
           ],
         },
       ],
