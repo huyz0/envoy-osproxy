@@ -40,7 +40,7 @@ jobs:
       - name: Publish
         run: |
           set -euo pipefail
-          for c in evoxy-abi evoxy-adapter evoxy-route evoxy-filter evoxy-extproc evoxy-bridge; do
+          for c in evoxy-abi evoxy-adapter evoxy-route evoxy-filter evoxy-bridge evoxy-extproc; do
             echo "::group::publish $c"
             if cargo publish -p "$c" 2>&1 | tee /tmp/pub.log; then
               echo "$c published"
